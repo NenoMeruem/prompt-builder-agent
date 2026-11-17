@@ -102,6 +102,7 @@ pub fn default_recipes() -> Vec<Prompt> {
             template: "Hãy đóng vai một biên tập viên ngôn ngữ chuyên nghiệp. Hãy rà soát và cải thiện đoạn văn bản tiếng Việt sau đây. Nhiệm vụ của bạn là:\n\nSửa lỗi chính tả và ngữ pháp.\n\nLàm cho câu văn trôi chảy, tự nhiên và mạch lạc hơn.\n\nGiữ nguyên ý nghĩa gốc và văn phong của tác giả (trang trọng hoặc gần gũi).\n\nVăn bản cần chỉnh sửa: {{selection}}".into(),
             variables: vec!["selection".into()],
             params: vec![],
+            steps: None,
             icon: "✨".into(),
             sort_order: 0,
             created_at: seed,
@@ -115,6 +116,7 @@ pub fn default_recipes() -> Vec<Prompt> {
             template: "Hãy dịch đoạn văn bản sau sang tiếng Anh. Đảm bảo bản dịch không chỉ chính xác về mặt từ ngữ mà còn phù hợp với ngữ cảnh văn hóa và sắc thái biểu cảm của bản gốc. Tránh dịch word-by-word quá cứng nhắc.\n\nVăn bản gốc: {{selection}}".into(),
             variables: vec!["selection".into()],
             params: vec![],
+            steps: None,
             icon: "🇬🇧".into(),
             sort_order: 1,
             created_at: seed,
@@ -128,6 +130,7 @@ pub fn default_recipes() -> Vec<Prompt> {
             template: "Hãy dịch đoạn văn bản sau sang tiếng Việt. Yêu cầu bản dịch diễn đạt tự nhiên theo cách nói của người Việt, câu văn gãy gọn, dễ hiểu và truyền tải đầy đủ thông tin từ bản gốc.\n\nVăn bản gốc: {{selection}}".into(),
             variables: vec!["selection".into()],
             params: vec![],
+            steps: None,
             icon: "🇻🇳".into(),
             sort_order: 2,
             created_at: seed,
@@ -141,13 +144,48 @@ pub fn default_recipes() -> Vec<Prompt> {
             template: "Bạn là một Software Engineer dày dạn kinh nghiệm. Hãy dịch đoạn văn bản kỹ thuật sau đây sang tiếng Việt.\nYêu cầu cụ thể:\n\nSử dụng ngôn ngữ đơn giản, bình dân, tránh dùng từ Hán Việt quá trang trọng nếu không cần thiết.\n\nGiữ nguyên các thuật ngữ chuyên ngành phổ biến trong giới lập trình (ví dụ: 'build', 'debug', 'instance', 'deploy') nếu việc dịch chúng sang tiếng Việt khiến câu văn trở nên khó hiểu hoặc xa lạ.\n\nGiải thích ngắn gọn trong ngoặc nếu thuật ngữ đó quá trừu tượng.\n\nƯu tiên sự rõ ràng và tính ứng dụng cao.\n\nVăn bản kỹ thuật: {{selection}}".into(),
             variables: vec!["selection".into()],
             params: vec![],
+            steps: None,
             icon: "⚙️".into(),
             sort_order: 3,
             created_at: seed,
             updated_at: seed,
         },
+        Prompt {
+            id: "deep_fix_and_unit_test".into(),
+            name: "Deep Bug Fix & Unit Test (Chain)".into(),
+            description: "Chuỗi 2 bước LCEL: Phân tích lỗi ➔ Tạo code fix và trọn bộ Unit Test.".into(),
+            engine: "gemini".into(),
+            template: "Code cần xử lý: {{selection}}".into(),
+            variables: vec!["selection".into()],
+            params: vec![],
+            steps: Some(vec![
+                crate::models::RecipeStep {
+                    step_id: "diagnose_root_cause".into(),
+                    name: "Phân tích nguyên nhân lỗi".into(),
+                    template: "Bạn là chuyên gia thẩm định code. Hãy phân tích kỹ đoạn code sau, tìm các lỗi logic, bug tiềm ẩn và edge cases:\n\n```\n{{selection}}\n```\n\nNêu rõ nguyên nhân gốc rễ và hướng khắc phục:".into(),
+                    provider: Some("gemini".into()),
+                    model: Some("gemini-2.5-flash-lite".into()),
+                    api_key: None,
+                    output_key: "bug_diagnosis".into(),
+                },
+                crate::models::RecipeStep {
+                    step_id: "generate_fix_and_tests".into(),
+                    name: "Tạo code fix và Unit Test".into(),
+                    template: "Dựa trên chẩn đoán lỗi sau:\n\n{{bug_diagnosis}}\n\nHãy viết code đã được fix hoàn chỉnh và viết trọn bộ Unit Tests kiểm tra các trường hợp biên (edge cases). Giải thích ngắn gọn cách test:".into(),
+                    provider: Some("gemini".into()),
+                    model: Some("gemini-2.5-flash-lite".into()),
+                    api_key: None,
+                    output_key: "result".into(),
+                },
+            ]),
+            icon: "🔗".into(),
+            sort_order: 4,
+            created_at: seed,
+            updated_at: seed,
+        },
     ]
 }
+
 
 // ---------------------------------------------------------------------------
 // Unit Tests
@@ -259,10 +297,11 @@ mod tests {
     // --- default_recipes ---
 
     #[test]
-    fn default_recipes_returns_four_entries() {
+    fn default_recipes_returns_five_entries() {
         let recipes = default_recipes();
-        assert_eq!(recipes.len(), 4);
+        assert_eq!(recipes.len(), 5);
     }
+
 
     #[test]
     fn default_recipes_have_unique_ids() {

@@ -1,6 +1,6 @@
 """
 Pydantic schemas for API request, response, and SSE streaming payloads.
-Directly accepts engine/provider, model, and api_key from caller (Tauri / Rust).
+Directly accepts engine/provider, model, api_key, and chained steps from caller (Tauri / Rust).
 """
 
 from typing import Any, Dict, List, Optional
@@ -16,8 +16,9 @@ class Message(BaseModel):
 
 class RecipeStep(BaseModel):
     step_id: str = Field(description="Unique identifier of this step")
+    name: Optional[str] = Field(default="", description="Display name of this step (e.g. 'Phân tích lỗi')")
     template: str = Field(description="Prompt template containing {{variables}}")
-    provider: Optional[str] = Field(default="gemini", description="gemini, openai, claude, ollama")
+    provider: Optional[str] = Field(default=None, description="gemini, openai, claude, ollama")
     model: Optional[str] = Field(default=None, description="Model override for this step (e.g. gpt-4o-mini, gemini-2.5-flash)")
     api_key: Optional[str] = Field(default=None, description="API key for this specific step if different")
     output_key: str = Field(default="result", description="Key where output will be stored for subsequent steps")

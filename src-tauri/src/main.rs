@@ -12,7 +12,7 @@ use config::{
     get_engine_api_key, get_engine_model, get_engine_timeout_secs, get_hotkey,
     load_config, save_config, AppConfig,
 };
-use models::{LlmRequest, Message, RunRecord};
+use models::{Chunk, LlmRequest, Message, RunRecord};
 use storage::{
     history_append, history_clear_all, history_list, open_db, prompt_create,
     prompt_delete, prompt_get, prompt_list, prompt_next_sort_order, prompt_reorder,
@@ -70,6 +70,17 @@ fn build_llm_manager(cfg: &AppConfig) -> LlmManager {
         mgr.register_id(id.clone(), client);
     }
 
+    // Always register default fallback sidecar client
+    let default_api_key = config::get_engine_api_key(cfg, "gemini");
+    let default_client: Box<dyn LlmClient> = Box::new(SidecarClient::new(
+        sidecar_url,
+        "gemini",
+        "gemini-2.5-flash-lite",
+        default_api_key,
+        Duration::from_secs(60),
+    ));
+    mgr.register_id("default".into(), default_client);
+
     mgr
 }
 
@@ -79,8 +90,9 @@ fn build_llm_manager(cfg: &AppConfig) -> LlmManager {
 // Tauri Commands
 // ---------------------------------------------------------------------------
 
-/// Run a recipe: build the prompt from selection + variables, call LLM,
-/// stream chunks back to the WebView as `chunk` / `error` / `done` events.
+/// Run a prompt recipe. Resolves template variables, selects the engine,
+/// and streams the response back via the Tauri event system.
+/// Also stores the completed interaction in SQLite history.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn run_recipe(
@@ -94,11 +106,16 @@ async fn run_recipe(
     complexity: String,
     session_id: String,
 ) -> Result<(), String> {
+    eprintln!(
+        "[run_recipe] Invoked: recipe_id='{}', engine='{}', selection_len={}, session_id='{}'",
+        recipe_id, engine, selection.len(), session_id
+    );
+
     // ── 1. Load prompt from DB ──────────────────────────────────────────────
-    let (template, prompt_engine, prompt_id, variables) = {
+    let (template, prompt_engine, prompt_id, variables, steps) = {
         let db = state.db.lock().unwrap();
         let p = prompt_get(&db, &recipe_id).map_err(|e| e.to_string())?;
-        (p.template, p.engine, p.id, p.variables)
+        (p.template, p.engine, p.id, p.variables, p.steps)
     };
 
     // ── 2. Build template data map ─────────────────────────────────────────
@@ -129,28 +146,91 @@ async fn run_recipe(
     }
 
     // ── 5. Resolve engine ─────────────────────────────────────────────────
-    let resolved_engine = if engine.is_empty() { prompt_engine } else { engine };
+    let cfg = state.config.lock().unwrap().clone();
+    let resolved_engine = if !engine.is_empty() {
+        engine
+    } else if !prompt_engine.is_empty() {
+        prompt_engine
+    } else if let Some((first_id, _)) = cfg.engines.iter().next() {
+        first_id.clone()
+    } else {
+        "gemini".to_string()
+    };
 
     // ── 6. Build LLM manager and get client ───────────────────────────────
-    let cfg = state.config.lock().unwrap().clone();
     let llm_mgr = build_llm_manager(&cfg);
     let model = get_engine_model(&cfg, &resolved_engine);
 
-    let client: &dyn LlmClient = llm_mgr.get(&resolved_engine)
-        .ok_or_else(|| format!("Engine '{}' not configured or API key missing", resolved_engine))?;
+    let client: &dyn LlmClient = match llm_mgr.get(&resolved_engine) {
+        Some(c) => c,
+        None => {
+            eprintln!(
+                "[run_recipe] Engine '{}' not found in llm_mgr; falling back to default sidecar client",
+                resolved_engine
+            );
+            llm_mgr.get("default").ok_or_else(|| {
+                format!("Engine '{}' not configured and default fallback failed", resolved_engine)
+            })?
+        }
+    };
 
     // ── 7. Stream response ─────────────────────────────────────────────────
+    let resolved_steps = steps.map(|mut step_list| {
+        for step in &mut step_list {
+            if let Some(ref step_prov) = step.provider {
+                if step_prov.is_empty() {
+                    continue;
+                }
+                // Check if step_prov matches a configured engine ID
+                if let Some(ec) = cfg.engines.get(step_prov) {
+                    let inferred = config::infer_provider(step_prov, ec);
+                    let eng_key = config::get_engine_api_key(&cfg, step_prov);
+                    let eng_model = config::get_engine_model(&cfg, step_prov);
+
+                    step.provider = Some(inferred);
+                    if step.model.as_ref().map(|m| m.trim().is_empty()).unwrap_or(true) {
+                        step.model = Some(eng_model);
+                    }
+                    if step.api_key.as_ref().map(|k| k.trim().is_empty()).unwrap_or(true) {
+                        step.api_key = Some(eng_key);
+                    }
+                } else {
+                    // step_prov is a provider name ("gemini", "openai", "claude", "ollama")
+                    for (id, ec) in &cfg.engines {
+                        let inferred = config::infer_provider(id, ec);
+                        if inferred.eq_ignore_ascii_case(step_prov) {
+                            if step.api_key.as_ref().map(|k| k.trim().is_empty()).unwrap_or(true) {
+                                step.api_key = Some(config::get_engine_api_key(&cfg, id));
+                            }
+                            if step.model.as_ref().map(|m| m.trim().is_empty()).unwrap_or(true) {
+                                step.model = Some(config::get_engine_model(&cfg, id));
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        step_list
+    });
+
+    let has_pipeline = resolved_steps.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
+    eprintln!(
+        "[run_recipe] Starting streaming with client '{}', is_pipeline={}",
+        client.name(),
+        has_pipeline
+    );
+
     let req = LlmRequest {
         prompt: final_prompt.clone(),
         model,
         messages: vec![],
+        steps: resolved_steps,
     };
 
-    let (tx, mut rx) = mpsc::channel(64);
+    let (tx, mut rx) = mpsc::channel::<Chunk>(256);
     let start = std::time::Instant::now();
     let mut response_buf = String::new();
-
-    client.stream(req, tx).await;
 
     let app_clone = app.clone();
     let sid = session_id.clone();
@@ -159,19 +239,31 @@ async fn run_recipe(
     let eng = resolved_engine.clone();
     let pid = prompt_id.clone();
 
-    // Spawn receiver task — this runs in the Tauri async runtime
+    // 1. Spawn receiver task FIRST so it receives chunks concurrently with stream
     tauri::async_runtime::spawn(async move {
         while let Some(chunk) = rx.recv().await {
             if let Some(err) = &chunk.error {
+                eprintln!("[run_recipe] Streaming error chunk: {}", err);
                 app_clone.emit("error", err.clone()).ok();
+                app_clone.emit("done", ()).ok();
                 break;
             }
-            if !chunk.text.is_empty() {
+            if chunk.event_type.as_deref() == Some("status") {
+                app_clone.emit("status", &chunk).ok();
+                continue;
+            }
+            if !chunk.text.is_empty() || chunk.step_id.is_some() {
                 response_buf.push_str(&chunk.text);
-                app_clone.emit("chunk", chunk.text.clone()).ok();
+                app_clone.emit("chunk", &chunk).ok();
             }
             if chunk.done {
                 let duration_ms = start.elapsed().as_millis() as i64;
+                eprintln!(
+                    "[run_recipe] Streaming completed (received {} chars in {}ms)",
+                    response_buf.len(),
+                    duration_ms
+                );
+
                 // Save to history (non-fatal)
                 if let Ok(db_guard) = app_clone.state::<AppState>().db.lock() {
                     let record = RunRecord {
@@ -195,23 +287,23 @@ async fn run_recipe(
         }
     });
 
+    // 2. Stream chunks through LLM client (channel is actively being read by receiver)
+    client.stream(req, tx).await;
+
     Ok(())
 }
 
-/// Continue a multi-turn chat conversation.
+/// Send a follow-up turn in an existing chat conversation.
+/// Streams chunks to WebView via "chunk" events and emits "done" on completion.
 #[tauri::command]
 async fn send_chat(
     app: AppHandle,
     state: State<'_, AppState>,
-    messages_json: String,
-    engine: String,
     session_id: String,
-    turn_index: u32,
     prompt_id: String,
+    engine: String,
+    messages: Vec<Message>,
 ) -> Result<(), String> {
-    let messages: Vec<Message> = serde_json::from_str(&messages_json)
-        .map_err(|e| format!("Invalid messages JSON: {}", e))?;
-
     if messages.is_empty() {
         return Err("messages array is empty".into());
     }
@@ -229,19 +321,24 @@ async fn send_chat(
     let client: &dyn LlmClient = llm_mgr.get(&engine)
         .ok_or_else(|| format!("Engine '{}' not configured or API key missing", engine))?;
 
-    let req = LlmRequest { prompt: String::new(), model, messages: messages.clone() };
+    let req = LlmRequest {
+        prompt: String::new(),
+        model,
+        messages: messages.clone(),
+        steps: None,
+    };
 
-    let (tx, mut rx) = mpsc::channel(64);
+    let (tx, mut rx) = mpsc::channel::<Chunk>(256);
+
     let start = std::time::Instant::now();
     let mut response_buf = String::new();
-
-    client.stream(req, tx).await;
 
     let app_clone = app.clone();
     let eng = engine.clone();
     let sid = session_id.clone();
     let pid = prompt_id.clone();
 
+    // Spawn receiver task first
     tauri::async_runtime::spawn(async move {
         while let Some(chunk) = rx.recv().await {
             if let Some(err) = &chunk.error {
@@ -258,7 +355,7 @@ async fn send_chat(
                     let record = RunRecord {
                         id: Uuid::new_v4().to_string(),
                         session_id: sid.clone(),
-                        turn_index: turn_index as i64,
+                        turn_index: 0,
                         prompt_id: pid.clone(),
                         engine: eng.clone(),
                         input_text: user_input.clone(),
@@ -276,8 +373,11 @@ async fn send_chat(
         }
     });
 
+    client.stream(req, tx).await;
+
     Ok(())
 }
+
 
 /// Returns all recipes as a JSON array string.
 #[tauri::command]
@@ -299,6 +399,7 @@ fn save_recipe(
     engine: String,
     params: String,
     icon: String,
+    steps: Option<String>,
 ) -> Result<String, String> {
     let db = state.db.lock().unwrap();
     let variables = prompt::extract_variables(&template);
@@ -307,6 +408,11 @@ fn save_recipe(
     } else {
         params.split(',').map(|s| s.trim().to_string()).collect()
     };
+    let steps_vec: Option<Vec<models::RecipeStep>> = steps
+        .as_ref()
+        .filter(|s| !s.trim().is_empty())
+        .and_then(|s| serde_json::from_str(s).ok());
+
     let sort_order = prompt_next_sort_order(&db);
     let now = Utc::now();
     let p = models::Prompt {
@@ -317,6 +423,7 @@ fn save_recipe(
         template,
         variables,
         params: params_vec,
+        steps: steps_vec,
         icon,
         sort_order,
         created_at: now,
@@ -338,6 +445,7 @@ fn update_recipe(
     engine: String,
     params: String,
     icon: String,
+    steps: Option<String>,
 ) -> Result<String, String> {
     let db = state.db.lock().unwrap();
     let mut existing = prompt_get(&db, &id).map_err(|e| e.to_string())?;
@@ -353,6 +461,13 @@ fn update_recipe(
     } else {
         params.split(',').map(|s| s.trim().to_string()).collect()
     };
+    if let Some(steps_str) = steps {
+        if steps_str.trim().is_empty() {
+            existing.steps = None;
+        } else {
+            existing.steps = serde_json::from_str(&steps_str).ok();
+        }
+    }
     if !icon.is_empty() { existing.icon = icon; }
     prompt_update(&db, &existing).map_err(|e| e.to_string())?;
     Ok("updated".into())
@@ -431,9 +546,15 @@ async fn ping_engine(state: State<'_, AppState>, engine: String) -> Result<Strin
 
     let (tx, mut rx) = mpsc::channel(8);
     client.stream(
-        LlmRequest { prompt: "Respond with exactly: ok".into(), model, messages: vec![] },
+        LlmRequest {
+            prompt: "Respond with exactly: ok".into(),
+            model,
+            messages: vec![],
+            steps: None,
+        },
         tx,
     ).await;
+
 
     while let Some(chunk) = rx.recv().await {
         if let Some(err) = chunk.error {

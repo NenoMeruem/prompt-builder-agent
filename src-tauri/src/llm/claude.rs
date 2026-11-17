@@ -87,7 +87,7 @@ impl LlmClient for ClaudeClient {
         let client = match reqwest::Client::builder().timeout(self.timeout).build() {
             Ok(c) => c,
             Err(e) => {
-                let _ = tx.send(Chunk { text: String::new(), done: true, error: Some(e.to_string()) }).await;
+                let _ = tx.send(Chunk::new_error(e.to_string())).await;
                 return;
             }
         };
@@ -103,7 +103,7 @@ impl LlmClient for ClaudeClient {
         {
             Ok(r) => r,
             Err(e) => {
-                let _ = tx.send(Chunk { text: String::new(), done: true, error: Some(e.to_string()) }).await;
+                let _ = tx.send(Chunk::new_error(e.to_string())).await;
                 return;
             }
         };
@@ -111,11 +111,7 @@ impl LlmClient for ClaudeClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body_text = resp.text().await.unwrap_or_default();
-            let _ = tx.send(Chunk {
-                text: String::new(),
-                done: true,
-                error: Some(format!("Claude API error {}: {}", status, body_text)),
-            }).await;
+            let _ = tx.send(Chunk::new_error(format!("Claude API error {}: {}", status, body_text))).await;
             return;
         }
 
@@ -125,7 +121,7 @@ impl LlmClient for ClaudeClient {
         'outer: while let Some(chunk_result) = stream.next().await {
             match chunk_result {
                 Err(e) => {
-                    let _ = tx.send(Chunk { text: String::new(), done: true, error: Some(e.to_string()) }).await;
+                    let _ = tx.send(Chunk::new_error(e.to_string())).await;
                     return;
                 }
                 Ok(bytes) => {
@@ -150,7 +146,7 @@ impl LlmClient for ClaudeClient {
                                     if let Some(delta) = event.delta {
                                         if delta.delta_type.as_deref() == Some("text_delta") {
                                             if let Some(text) = delta.text {
-                                                if !text.is_empty() && tx.send(Chunk { text, done: false, error: None }).await.is_err() {
+                                                if !text.is_empty() && tx.send(Chunk::new_text(text)).await.is_err() {
                                                     break 'outer;
                                                 }
                                             }
@@ -158,7 +154,7 @@ impl LlmClient for ClaudeClient {
                                     }
                                 }
                                 "message_stop" => {
-                                    let _ = tx.send(Chunk { text: String::new(), done: true, error: None }).await;
+                                    let _ = tx.send(Chunk::new_done()).await;
                                     return;
                                 }
                                 _ => {}
@@ -169,7 +165,8 @@ impl LlmClient for ClaudeClient {
             }
         }
 
-        let _ = tx.send(Chunk { text: String::new(), done: true, error: None }).await;
+        let _ = tx.send(Chunk::new_done()).await;
+
     }
 }
 

@@ -127,7 +127,7 @@ impl LlmClient for GeminiClient {
         {
             Ok(c) => c,
             Err(e) => {
-                let _ = tx.send(Chunk { text: String::new(), done: true, error: Some(e.to_string()) }).await;
+                let _ = tx.send(Chunk::new_error(e.to_string())).await;
                 return;
             }
         };
@@ -143,7 +143,7 @@ impl LlmClient for GeminiClient {
         {
             Ok(r) => r,
             Err(e) => {
-                let _ = tx.send(Chunk { text: String::new(), done: true, error: Some(e.to_string()) }).await;
+                let _ = tx.send(Chunk::new_error(e.to_string())).await;
                 return;
             }
         };
@@ -151,11 +151,7 @@ impl LlmClient for GeminiClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body_text = resp.text().await.unwrap_or_default();
-            let _ = tx.send(Chunk {
-                text: String::new(),
-                done: true,
-                error: Some(format!("Gemini API error {}: {}", status, body_text)),
-            }).await;
+            let _ = tx.send(Chunk::new_error(format!("Gemini API error {}: {}", status, body_text))).await;
             return;
         }
 
@@ -167,7 +163,7 @@ impl LlmClient for GeminiClient {
         'outer: while let Some(chunk_result) = stream.next().await {
             match chunk_result {
                 Err(e) => {
-                    let _ = tx.send(Chunk { text: String::new(), done: true, error: Some(e.to_string()) }).await;
+                    let _ = tx.send(Chunk::new_error(e.to_string())).await;
                     return;
                 }
                 Ok(bytes) => {
@@ -203,11 +199,7 @@ impl LlmClient for GeminiClient {
                                 // Check if prompt was blocked
                                 if let Some(ref pf) = gr.prompt_feedback {
                                     if let Some(reason) = pf.get("blockReason").and_then(|v| v.as_str()) {
-                                        let _ = tx.send(Chunk {
-                                            text: String::new(),
-                                            done: true,
-                                            error: Some(format!("Prompt blocked: {}", reason)),
-                                        }).await;
+                                        let _ = tx.send(Chunk::new_error(format!("Prompt blocked: {}", reason))).await;
                                         return;
                                     }
                                 }
@@ -217,7 +209,7 @@ impl LlmClient for GeminiClient {
                                     if let Some(content) = candidate.content {
                                         for part in content.parts.unwrap_or_default() {
                                             if let Some(text) = part.text {
-                                                if !text.is_empty() && tx.send(Chunk { text, done: false, error: None }).await.is_err() {
+                                                if !text.is_empty() && tx.send(Chunk::new_text(text)).await.is_err() {
                                                     return;
                                                 }
                                             }
@@ -239,7 +231,8 @@ impl LlmClient for GeminiClient {
             }
         }
 
-        let _ = tx.send(Chunk { text: String::new(), done: true, error: None }).await;
+        let _ = tx.send(Chunk::new_done()).await;
+
     }
 }
 

@@ -99,7 +99,7 @@ impl LlmClient for OpenAiClient {
         let client = match reqwest::Client::builder().timeout(self.timeout).build() {
             Ok(c) => c,
             Err(e) => {
-                let _ = tx.send(Chunk { text: String::new(), done: true, error: Some(e.to_string()) }).await;
+                let _ = tx.send(Chunk::new_error(e.to_string())).await;
                 return;
             }
         };
@@ -113,7 +113,7 @@ impl LlmClient for OpenAiClient {
         {
             Ok(r) => r,
             Err(e) => {
-                let _ = tx.send(Chunk { text: String::new(), done: true, error: Some(e.to_string()) }).await;
+                let _ = tx.send(Chunk::new_error(e.to_string())).await;
                 return;
             }
         };
@@ -121,11 +121,7 @@ impl LlmClient for OpenAiClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body_text = resp.text().await.unwrap_or_default();
-            let _ = tx.send(Chunk {
-                text: String::new(),
-                done: true,
-                error: Some(format!("OpenAI API error {}: {}", status, body_text)),
-            }).await;
+            let _ = tx.send(Chunk::new_error(format!("OpenAI API error {}: {}", status, body_text))).await;
             return;
         }
 
@@ -135,7 +131,7 @@ impl LlmClient for OpenAiClient {
         while let Some(chunk_result) = stream.next().await {
             match chunk_result {
                 Err(e) => {
-                    let _ = tx.send(Chunk { text: String::new(), done: true, error: Some(e.to_string()) }).await;
+                    let _ = tx.send(Chunk::new_error(e.to_string())).await;
                     return;
                 }
                 Ok(bytes) => {
@@ -149,7 +145,7 @@ impl LlmClient for OpenAiClient {
                         }
 
                         if line == "data: [DONE]" {
-                            let _ = tx.send(Chunk { text: String::new(), done: true, error: None }).await;
+                            let _ = tx.send(Chunk::new_done()).await;
                             return;
                         }
 
@@ -162,7 +158,7 @@ impl LlmClient for OpenAiClient {
                         if let Ok(sse) = serde_json::from_str::<StreamResponse>(data) {
                             for choice in sse.choices {
                                 if let Some(text) = choice.delta.content {
-                                    if !text.is_empty() && tx.send(Chunk { text, done: false, error: None }).await.is_err() {
+                                    if !text.is_empty() && tx.send(Chunk::new_text(text)).await.is_err() {
                                         return;
                                     }
                                 }
@@ -173,7 +169,8 @@ impl LlmClient for OpenAiClient {
             }
         }
 
-        let _ = tx.send(Chunk { text: String::new(), done: true, error: None }).await;
+        let _ = tx.send(Chunk::new_done()).await;
+
     }
 }
 

@@ -22,6 +22,35 @@ const PARAM_CONFIG = {
   complexity: { label: 'Complexity', emoji: '', options: ['simple', 'normal', 'technical'] },
 };
 
+const ENGINE_MODELS = {
+  gemini: [
+    'gemini-2.5-flash-lite',
+    'gemini-2.5-flash',
+    'gemini-2.5-pro',
+    'gemini-2.0-flash',
+    'gemini-1.5-flash',
+    'gemini-1.5-pro',
+  ],
+  claude: [
+    'claude-3-5-sonnet-latest',
+    'claude-3-5-haiku-latest',
+    'claude-3-opus-latest',
+  ],
+  openai: [
+    'gpt-4o',
+    'gpt-4o-mini',
+    'gpt-4-turbo',
+    'o3-mini',
+  ],
+  ollama: [
+    'llama3.2',
+    'deepseek-r1:8b',
+    'qwen2.5-coder:7b',
+    'mistral',
+  ],
+};
+
+
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const outputEl        = document.getElementById('output');
 const runBtn          = document.getElementById('run-btn');
@@ -49,12 +78,16 @@ const settingsBtn     = document.querySelector('.hbtn[title="Settings"]');
 const settingsCloseBtn = document.getElementById('settings-close-btn');
 const settingsMsg     = document.getElementById('settings-msg');
 
+
 // ── Markdown renderer ─────────────────────────────────────────────────────────
+
 function escapeHtml(s) {
+  if (!s || typeof s !== 'string') return '';
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
 function inlineMd(text) {
+  if (!text || typeof text !== 'string') return '';
   text = escapeHtml(text);
   text = text.replace(/`([^`\n]+)`/g, '<code>$1</code>');
   text = text.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
@@ -63,123 +96,134 @@ function inlineMd(text) {
   text = text.replace(/\*([^*\n]+?)\*/g, '<em>$1</em>');
   text = text.replace(/_([^_\n]+?)_/g, '<em>$1</em>');
   text = text.replace(/~~(.+?)~~/g, '<del>$1</del>');
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
   return text;
 }
 
 function renderMarkdown(raw, _depth = 0) {
+  if (!raw || typeof raw !== 'string') return '';
   // Guard against infinite recursion (e.g. deeply nested blockquotes)
   if (_depth > 4) return escapeHtml(raw);
 
-  // Extract fenced code blocks to protect them from inline processing
-  // Uses a non-backtracking approach: split on ``` lines manually
-  const fences = [];
-  const fenceLines = raw.split('\n');
-  const processedLines = [];
-  let inFence = false;
-  let fenceLang = '';
-  let fenceContent = [];
-  for (const fl of fenceLines) {
-    if (!inFence) {
-      const fm = fl.match(/^```([\w.-]*)$/);
-      if (fm) { inFence = true; fenceLang = fm[1]; fenceContent = []; }
-      else { processedLines.push(fl); }
-    } else {
-      if (fl === '```') {
-        fences.push({ lang: fenceLang, code: fenceContent.join('\n') });
-        processedLines.push(`\x01F${fences.length - 1}\x01`);
-        inFence = false;
-      } else { fenceContent.push(fl); }
-    }
-  }
-  // Handle unclosed fence at end of stream
-  if (inFence) {
-    fences.push({ lang: fenceLang, code: fenceContent.join('\n') });
-    processedLines.push(`\x01F${fences.length - 1}\x01`);
-  }
-  let md = processedLines.join('\n');
-
-  const lines  = md.split('\n');
-  const out    = [];
-  let i        = 0;
-
-  const flushFence = (token) => {
-    const idx = parseInt(token.match(/\d+/)[0]);
-    const { lang, code } = fences[idx];
-    const label = lang ? `<span class="md-code-lang">${escapeHtml(lang)}</span>` : '';
-    return `<pre class="md-pre">${label}<code class="md-code-block">${escapeHtml(code)}</code></pre>`;
-  };
-
-  while (i < lines.length) {
-    const line = lines[i];
-
-    // Code fence placeholder
-    if (/^\x01F\d+\x01$/.test(line.trim())) {
-      out.push(flushFence(line.trim()));
-      i++; continue;
-    }
-    // Heading
-    const hm = line.match(/^(#{1,6}) (.+)/);
-    if (hm) {
-      const lvl = Math.min(hm[1].length, 6);
-      out.push(`<h${lvl} class="md-h${lvl}">${inlineMd(hm[2].trim())}</h${lvl}>`);
-      i++; continue;
-    }
-    // Horizontal rule
-    if (/^[-*_]{3,}$/.test(line.trim())) {
-      out.push('<hr class="md-hr">');
-      i++; continue;
-    }
-    // Blockquote — use depth+1 to prevent infinite recursion
-    if (line.startsWith('> ')) {
-      const qlines = [];
-      while (i < lines.length && lines[i].startsWith('> ')) { qlines.push(lines[i].slice(2)); i++; }
-      out.push(`<blockquote class="md-blockquote">${renderMarkdown(qlines.join('\n'), _depth + 1)}</blockquote>`);
-      continue;
-    }
-    // Unordered list
-    if (/^[-*+] /.test(line)) {
-      const items = [];
-      while (i < lines.length && /^[-*+] /.test(lines[i])) {
-        items.push(`<li>${inlineMd(lines[i].replace(/^[-*+] /, ''))}</li>`);
-        i++;
+  try {
+    // Extract fenced code blocks to protect them from inline processing
+    // Uses a non-backtracking approach: split on ``` lines manually
+    const fences = [];
+    const fenceLines = raw.split('\n');
+    const processedLines = [];
+    let inFence = false;
+    let fenceLang = '';
+    let fenceContent = [];
+    for (const fl of fenceLines) {
+      if (!inFence) {
+        const fm = fl.match(/^```\s*([\w.-]*)/);
+        if (fm) { inFence = true; fenceLang = fm[1]; fenceContent = []; }
+        else { processedLines.push(fl); }
+      } else {
+        if (fl.trim() === '```') {
+          fences.push({ lang: fenceLang, code: fenceContent.join('\n') });
+          processedLines.push(`\x01F${fences.length - 1}\x01`);
+          inFence = false;
+        } else { fenceContent.push(fl); }
       }
-      out.push(`<ul class="md-ul">${items.join('')}</ul>`);
-      continue;
     }
-    // Ordered list
-    if (/^\d+[.)]\s/.test(line)) {
-      const items = [];
-      while (i < lines.length && /^\d+[.)]\s/.test(lines[i])) {
-        items.push(`<li>${inlineMd(lines[i].replace(/^\d+[.)]\s/, ''))}</li>`);
-        i++;
-      }
-      out.push(`<ol class="md-ol">${items.join('')}</ol>`);
-      continue;
+    // Handle unclosed fence at end of stream
+    if (inFence) {
+      fences.push({ lang: fenceLang, code: fenceContent.join('\n') });
+      processedLines.push(`\x01F${fences.length - 1}\x01`);
     }
-    // Blank line
-    if (line.trim() === '') { i++; continue; }
+    let md = processedLines.join('\n');
 
-    // Paragraph — gather lines until block boundary
-    const plines = [];
+    const lines  = md.split('\n');
+    const out    = [];
+    let i        = 0;
+
+    const flushFence = (token) => {
+      const match = token.match(/\d+/);
+      if (!match) return '';
+      const idx = parseInt(match[0], 10);
+      const fence = fences[idx];
+      if (!fence) return `<pre class="md-pre"><code>${escapeHtml(token)}</code></pre>`;
+      const label = fence.lang ? `<span class="md-code-lang">${escapeHtml(fence.lang)}</span>` : '';
+      return `<pre class="md-pre">${label}<code class="md-code-block">${escapeHtml(fence.code)}</code></pre>`;
+    };
+
     while (i < lines.length) {
-      const l = lines[i];
-      if (l.trim() === '') break;
-      if (/^\x01F\d+\x01$/.test(l.trim())) break;
-      if (/^#{1,6} /.test(l)) break;
-      if (/^[-*_]{3,}$/.test(l.trim())) break;
-      if (/^[-*+] /.test(l)) break;
-      if (/^\d+[.)]\s/.test(l)) break;
-      if (l.startsWith('> ')) break;
-      plines.push(inlineMd(l));
-      i++;
-    }
-    if (plines.length) out.push(`<p class="md-p">${plines.join('<br>')}</p>`);
-  }
+      const line = lines[i];
 
-  return out.join('');
+      // Code fence placeholder
+      if (/^\x01F\d+\x01$/.test(line.trim())) {
+        out.push(flushFence(line.trim()));
+        i++; continue;
+      }
+      // Heading
+      const hm = line.match(/^(#{1,6}) (.+)/);
+      if (hm) {
+        const lvl = Math.min(hm[1].length, 6);
+        out.push(`<h${lvl} class="md-h${lvl}">${inlineMd(hm[2].trim())}</h${lvl}>`);
+        i++; continue;
+      }
+      // Horizontal rule
+      if (/^[-*_]{3,}$/.test(line.trim())) {
+        out.push('<hr class="md-hr">');
+        i++; continue;
+      }
+      // Blockquote — use depth+1 to prevent infinite recursion
+      if (line.startsWith('> ')) {
+        const qlines = [];
+        while (i < lines.length && lines[i].startsWith('> ')) { qlines.push(lines[i].slice(2)); i++; }
+        out.push(`<blockquote class="md-blockquote">${renderMarkdown(qlines.join('\n'), _depth + 1)}</blockquote>`);
+        continue;
+      }
+      // Unordered list
+      if (/^[-*+] /.test(line)) {
+        const items = [];
+        while (i < lines.length && /^[-*+] /.test(lines[i])) {
+          items.push(`<li>${inlineMd(lines[i].replace(/^[-*+] /, ''))}</li>`);
+          i++;
+        }
+        out.push(`<ul class="md-ul">${items.join('')}</ul>`);
+        continue;
+      }
+      // Ordered list
+      if (/^\d+[.)]\s/.test(line)) {
+        const items = [];
+        while (i < lines.length && /^\d+[.)]\s/.test(lines[i])) {
+          items.push(`<li>${inlineMd(lines[i].replace(/^\d+[.)]\s/, ''))}</li>`);
+          i++;
+        }
+        out.push(`<ol class="md-ol">${items.join('')}</ol>`);
+        continue;
+      }
+      // Blank line
+      if (line.trim() === '') { i++; continue; }
+
+      // Paragraph — gather lines until block boundary
+      const plines = [];
+      while (i < lines.length) {
+        const l = lines[i];
+        if (l.trim() === '') break;
+        if (/^\x01F\d+\x01$/.test(l.trim())) break;
+        if (/^#{1,6} /.test(l)) break;
+        if (/^[-*_]{3,}$/.test(l.trim())) break;
+        if (/^[-*+] /.test(l)) break;
+        if (/^\d+[.)]\s/.test(l)) break;
+        if (l.startsWith('> ')) break;
+        plines.push(inlineMd(l));
+        i++;
+      }
+      if (plines.length) out.push(`<p class="md-p">${plines.join('<br>')}</p>`);
+    }
+
+    return out.join('');
+  } catch (err) {
+    console.error('renderMarkdown error, returning escaped text:', err);
+    return `<p class="md-p">${escapeHtml(raw)}</p>`;
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
 function sparkleIcon() {
   return `<svg viewBox="0 0 20 20" fill="currentColor">
     <path d="M10 1.5 L11.4 8.6 L18.5 10 L11.4 11.4 L10 18.5 L8.6 11.4 L1.5 10 L8.6 8.6 Z"/>
@@ -294,13 +338,17 @@ async function onDragEnd() {
 function renderRecipeList(recipes) {
   recipeListEl.innerHTML = '';
   for (const r of recipes) {
+    const isChain = Array.isArray(r.steps) && r.steps.length > 0;
+    const chainBadge = isChain ? `<span class="recipe-chain-badge" title="Multi-step Pipeline">🔗 ${r.steps.length} steps</span>` : '';
+
     const el = document.createElement('div');
     el.className = 'recipe-item';
     el.dataset.id = r.id;
     el.innerHTML = `
       <span class="recipe-drag-handle" title="Drag to reorder">⠿</span>
       <span class="recipe-icon">${sparkleIcon()}</span>
-      <span class="recipe-name">${r.name}</span>
+      <span class="recipe-name">${escapeHtml(r.name)}</span>
+      ${chainBadge}
       <div class="recipe-actions">
         <button class="recipe-edit-btn" title="Edit" data-id="${r.id}">${editIcon()}</button>
         <button class="recipe-del-btn" title="Delete" data-id="${r.id}">${trashIcon()}</button>
@@ -410,13 +458,19 @@ function selectRecipe(recipe) {
   });
   // Update breadcrumb
   if (breadcrumbPage) breadcrumbPage.textContent = recipe.name || '';
-  // Show template content in instructions
-  const tpl = recipe.template || recipe.description || '';
-  instructionText.textContent = tpl ? `"${tpl}"` : 'No instructions';
+  // Show template content or pipeline summary in instructions
+  if (Array.isArray(recipe.steps) && recipe.steps.length > 0) {
+    const stepsSummary = recipe.steps.map((s, i) => `${i + 1}. ${escapeHtml(s.name || s.step_id)}`).join(' ➔ ');
+    instructionText.innerHTML = `<strong>🔗 Pipeline (${recipe.steps.length} steps):</strong> ${stepsSummary}`;
+  } else {
+    const tpl = recipe.template || recipe.description || '';
+    instructionText.textContent = tpl ? `"${tpl}"` : 'No instructions';
+  }
   instructionText.classList.remove('ph');
   renderParams(recipe.params || []);
   updateRunState();
 }
+
 
 // ── Params ────────────────────────────────────────────────────────────────────
 function renderParams(params) {
@@ -476,72 +530,336 @@ function setFollowupLoading(loading) {
   if (followupBtn)   followupBtn.disabled   = loading;
 }
 
+// ── Pipeline Output State & Resolver ─────────────────────────────────────────
+let pipelineStepOutputs = {};
+let activePipelineStepId = '';
+
+function getStepTarget(stepId, stepIndex) {
+  // 1. Match by data-step-id or element ID
+  if (stepId) {
+    const box = document.getElementById(`step-box-${stepId}`) ||
+                document.querySelector(`[data-step-id="${stepId}"]`);
+    if (box) {
+      const contentEl = box.querySelector('.step-output-content');
+      if (contentEl) {
+        return {
+          box,
+          contentEl,
+          stepId: box.dataset.stepId || stepId,
+        };
+      }
+    }
+  }
+
+  // 2. Match by stepIndex (0, 1, 2, ...)
+  if (typeof stepIndex === 'number' && !isNaN(stepIndex)) {
+    const box = document.querySelector(`[data-step-index="${stepIndex}"]`);
+    if (box) {
+      const contentEl = box.querySelector('.step-output-content');
+      if (contentEl) {
+        return {
+          box,
+          contentEl,
+          stepId: box.dataset.stepId || `step_${stepIndex + 1}`,
+        };
+      }
+    }
+  }
+
+  // 3. Fallback: match first active or pending step box
+  const currentBox = document.querySelector('.step-output-box.active') ||
+                     document.querySelector('.step-output-box.pending') ||
+                     document.querySelector('.step-output-box');
+  if (currentBox) {
+    const contentEl = currentBox.querySelector('.step-output-content');
+    if (contentEl) {
+      return {
+        box: currentBox,
+        contentEl,
+        stepId: currentBox.dataset.stepId || 'step_1',
+      };
+    }
+  }
+
+  // 4. Fallback for single recipe or missing container
+  let bodyEl = document.getElementById('output-body');
+  if (!bodyEl) {
+    bodyEl = document.createElement('div');
+    bodyEl.id = 'output-body';
+    bodyEl.className = 'output-body';
+    outputEl.appendChild(bodyEl);
+  }
+  bodyEl.style.display = 'block';
+  return { box: bodyEl, contentEl: bodyEl, stepId: '' };
+}
+
 // ── Tauri events ──────────────────────────────────────────────────────────────
 await listen('selection', ({ payload }) => {
   currentSelection = payload || '';
-  // Always reset to input view so clipboard context is visible and ready
-  showView('input');
+  // Only switch to input view if not currently viewing an active output stream
+  const isRunning = runBtn.classList.contains('loading');
+  if (!isRunning && !viewOutput.classList.contains('visible')) {
+    showView('input');
+  }
   if (currentSelection) {
     inputArea.value = currentSelection;
   }
   updateRunState();
 });
 
-await listen('chunk', ({ payload }) => {
-  const bodyEl = document.getElementById('output-body');
-  if (!bodyEl) return;
-  // Remove "thinking" indicator on first real chunk
-  const thinking = outputEl.querySelector('.output-thinking');
-  if (thinking) thinking.remove();
-  aiResponseText += payload;
-  bodyEl.innerHTML = renderMarkdown(aiResponseText);
-  outputEl.scrollTop = outputEl.scrollHeight;
-});
+await listen('status', ({ payload }) => {
+  try {
+    if (!payload) return;
+    const data = typeof payload === 'string' ? JSON.parse(payload) : payload;
+    const stepId = data.step_id;
+    const stepIndex = typeof data.step_index === 'number' ? data.step_index : undefined;
 
-await listen('error', ({ payload }) => {
-  const bodyEl = document.getElementById('output-body');
-  if (bodyEl) {
-    const errEl = document.createElement('div');
-    errEl.className = 'output-error';
-    errEl.textContent = payload;
-    bodyEl.appendChild(errEl);
+    const target = getStepTarget(stepId, stepIndex);
+    if (target.box && target.box.classList.contains('step-output-box')) {
+      target.box.classList.remove('pending');
+      target.box.classList.add('active');
+      const st = target.box.querySelector('.step-output-badge-status');
+      if (st) st.innerHTML = '<span class="status-dot-pulse"></span> Running...';
+    }
+
+    // Update Stepper
+    if (typeof stepIndex === 'number') {
+      document.querySelectorAll('.stepper-step').forEach(el => {
+        if (el.dataset.stepIndex === String(stepIndex)) {
+          el.classList.remove('waiting');
+          el.classList.add('active');
+        }
+      });
+    } else if (stepId) {
+      document.querySelectorAll('.stepper-step').forEach(el => {
+        if (el.dataset.stepId === stepId || el.id === `stepper-step-${stepId}`) {
+          el.classList.remove('waiting');
+          el.classList.add('active');
+        }
+      });
+    }
+  } catch (err) {
+    console.error('[listen status error]:', err);
   }
 });
 
-await listen('done', () => {
-  setRunLoading(false);
-  setFollowupLoading(false);
-  const thinking = outputEl.querySelector('.output-thinking');
-  if (thinking) thinking.remove();
-  const trimmed = aiResponseText.trim();
-  if (trimmed) {
-    copyWrapEl.style.display = '';
-    // Word count meta
-    const wordCount = trimmed.split(/\s+/).filter(Boolean).length;
-    const metaEl = document.getElementById('output-meta');
-    if (metaEl) metaEl.textContent = `${wordCount} words`;
-    // Done badge
-    const bodyEl = document.getElementById('output-body');
-    if (bodyEl && !bodyEl.querySelector('.output-done-badge')) {
-      const badge = document.createElement('div');
-      badge.className = 'output-done-badge';
-      badge.textContent = 'Done';
-      bodyEl.appendChild(badge);
+await listen('chunk', ({ payload }) => {
+  try {
+    let chunkText = '';
+    let stepId = '';
+    let stepIndex = undefined;
+
+    if (typeof payload === 'object' && payload !== null) {
+      chunkText = payload.text || '';
+      stepId = payload.step_id || '';
+      stepIndex = typeof payload.step_index === 'number' ? payload.step_index : undefined;
+    } else {
+      chunkText = String(payload || '');
     }
-    // Save AI response to conversation history and show follow-up input
-    if (conversationEngine) {
-      // For turn 0 (initial recipe), seed history with the user's input text
-      if (conversationHistory.length === 0) {
-        conversationHistory.push({ role: 'user', content: currentSelection || inputArea.value.trim() });
+
+    if (!chunkText) return;
+
+    // Remove generic thinking banner if present
+    const thinking = outputEl.querySelector('.output-thinking');
+    if (thinking) thinking.remove();
+
+    aiResponseText += chunkText;
+
+    const isChain = document.getElementById('pipeline-steps-container') !== null;
+
+    if (isChain) {
+      const target = getStepTarget(stepId, stepIndex);
+      const effectiveStepId = target.stepId || (typeof stepIndex === 'number' ? `step_${stepIndex + 1}` : 'step_1');
+
+      // Accumulate text for this step under all possible keys
+      const current = (pipelineStepOutputs[effectiveStepId] || '') + chunkText;
+      pipelineStepOutputs[effectiveStepId] = current;
+      if (target.stepId) pipelineStepOutputs[target.stepId] = current;
+      if (stepId) pipelineStepOutputs[stepId] = current;
+      if (typeof stepIndex === 'number') {
+        pipelineStepOutputs[stepIndex] = current;
+        pipelineStepOutputs[`step_${stepIndex + 1}`] = current;
       }
-      conversationHistory.push({ role: 'assistant', content: trimmed });
-      followupBar.classList.remove('hidden');
-      followupInput.focus();
+
+      if (target.contentEl) {
+        try {
+          target.contentEl.innerHTML = renderMarkdown(current);
+        } catch {
+          target.contentEl.textContent = current;
+        }
+      }
+
+      if (target.box && target.box.classList.contains('step-output-box')) {
+        target.box.classList.remove('pending');
+        target.box.classList.add('active');
+        const st = target.box.querySelector('.step-output-badge-status');
+        if (st && !st.innerHTML.includes('Running')) {
+          st.innerHTML = '<span class="status-dot-pulse"></span> Running...';
+        }
+
+        // Mark preceding steps as completed
+        if (target.box.dataset.stepIndex !== undefined) {
+          const curIdx = parseInt(target.box.dataset.stepIndex, 10);
+          const allBoxes = [...document.querySelectorAll('.step-output-box')];
+          for (let i = 0; i < curIdx; i++) {
+            const prevBox = allBoxes[i];
+            if (prevBox) {
+              prevBox.classList.remove('active', 'pending');
+              prevBox.classList.add('completed');
+              const pSt = prevBox.querySelector('.step-output-badge-status');
+              if (pSt) pSt.innerHTML = '<span class="status-check">✓</span> Done';
+              const pCopy = prevBox.querySelector('.step-copy-btn');
+              if (pCopy) {
+                pCopy.classList.remove('hidden');
+                const pId = prevBox.dataset.stepId;
+                const pIdx = i;
+                pCopy.onclick = () => {
+                  const pTxt = pipelineStepOutputs[pId] || pipelineStepOutputs[`step_${pIdx + 1}`] || pipelineStepOutputs[pIdx] || '';
+                  writeToClipboard(pTxt);
+                  pCopy.textContent = '✓ Copied';
+                  setTimeout(() => { pCopy.textContent = 'Copy Step'; }, 1500);
+                };
+              }
+              const pStepEl = document.querySelector(`.stepper-step[data-step-index="${i}"]`);
+              if (pStepEl) {
+                pStepEl.classList.remove('active', 'waiting');
+                pStepEl.classList.add('completed');
+              }
+            }
+          }
+        }
+      }
+    } else {
+      // Single recipe standard render
+      let bodyEl = document.getElementById('output-body');
+      if (!bodyEl) {
+        bodyEl = document.createElement('div');
+        bodyEl.id = 'output-body';
+        bodyEl.className = 'output-body';
+        outputEl.appendChild(bodyEl);
+      }
+      bodyEl.style.display = 'block';
+      try {
+        bodyEl.innerHTML = renderMarkdown(aiResponseText);
+      } catch {
+        bodyEl.textContent = aiResponseText;
+      }
     }
+
+    outputEl.scrollTop = outputEl.scrollHeight;
+  } catch (err) {
+    console.error('[listen chunk error]:', err);
+  }
+});
+
+await listen('error', ({ payload }) => {
+  const errText = typeof payload === 'object' ? JSON.stringify(payload) : String(payload);
+  const errEl = document.createElement('div');
+  errEl.className = 'output-error';
+  errEl.innerHTML = `<strong>Error:</strong> ${escapeHtml(errText)}`;
+  const bodyEl = document.getElementById('output-body') || outputEl;
+  bodyEl.appendChild(errEl);
+});
+
+await listen('done', () => {
+  try {
+    setRunLoading(false);
+    setFollowupLoading(false);
+    const thinking = outputEl.querySelector('.output-thinking');
+    if (thinking) thinking.remove();
+
+    const isChain = document.getElementById('pipeline-steps-container') !== null;
+
+    // Mark all step cards as completed & enable step copy buttons
+    document.querySelectorAll('.step-output-box').forEach((box, idx) => {
+      box.classList.remove('active', 'pending');
+      box.classList.add('completed');
+      const sid = box.dataset.stepId;
+      const st = box.querySelector('.step-output-badge-status');
+      if (st) st.innerHTML = '<span class="status-check">✓</span> Done';
+
+      const sText = pipelineStepOutputs[sid] || pipelineStepOutputs[`step_${idx + 1}`] || pipelineStepOutputs[idx] || '';
+
+      const contentEl = box.querySelector('.step-output-content');
+      if (contentEl && sText) {
+        try {
+          contentEl.innerHTML = renderMarkdown(sText);
+        } catch {
+          contentEl.textContent = sText;
+        }
+      }
+
+      const copyBtn = box.querySelector('.step-copy-btn');
+      if (copyBtn) {
+        copyBtn.classList.remove('hidden');
+        copyBtn.onclick = () => {
+          writeToClipboard(sText);
+          copyBtn.textContent = '✓ Copied';
+          setTimeout(() => { copyBtn.textContent = 'Copy Step'; }, 1500);
+        };
+      }
+    });
+
+    document.querySelectorAll('.stepper-step').forEach(stepEl => {
+      stepEl.classList.remove('active', 'waiting');
+      stepEl.classList.add('completed');
+    });
+
+    // Re-synchronize normalized multi-step text for copy & history
+    if (isChain && activeRecipe && Array.isArray(activeRecipe.steps)) {
+      const combined = activeRecipe.steps.map((s, idx) => {
+        const sOut = (pipelineStepOutputs[s.step_id] || pipelineStepOutputs[`step_${idx + 1}`] || pipelineStepOutputs[idx] || '').trim();
+        if (!sOut) return '';
+        const sName = s.name || `Step ${idx + 1}`;
+        return `### 📍 Step ${idx + 1}: ${sName}\n\n${sOut}`;
+      }).filter(Boolean).join('\n\n---\n\n');
+      if (combined) {
+        aiResponseText = combined;
+      }
+
+      const container = document.getElementById('pipeline-steps-container');
+      if (container && !container.querySelector('.pipeline-done-banner')) {
+        const banner = document.createElement('div');
+        banner.className = 'pipeline-done-banner';
+        banner.innerHTML = '<span class="status-check">✓</span> All steps completed successfully';
+        container.appendChild(banner);
+      }
+    }
+
+    const trimmed = aiResponseText.trim();
+    if (trimmed) {
+      copyWrapEl.style.display = '';
+      // Word count meta
+      const wordCount = trimmed.split(/\s+/).filter(Boolean).length;
+      const metaEl = document.getElementById('output-meta');
+      if (metaEl) metaEl.textContent = `${wordCount} words`;
+      // Done badge for single recipe
+      if (!isChain) {
+        const bodyEl = document.getElementById('output-body');
+        if (bodyEl && !bodyEl.querySelector('.output-done-badge')) {
+          const badge = document.createElement('div');
+          badge.className = 'output-done-badge';
+          badge.textContent = 'Done';
+          bodyEl.appendChild(badge);
+        }
+      }
+      // Save AI response to conversation history and show follow-up input
+      if (conversationEngine) {
+        if (conversationHistory.length === 0) {
+          conversationHistory.push({ role: 'user', content: currentSelection || inputArea.value.trim() });
+        }
+        conversationHistory.push({ role: 'assistant', content: trimmed });
+        followupBar.classList.remove('hidden');
+        followupInput.focus();
+      }
+    }
+  } catch (err) {
+    console.error('[listen done error]:', err);
   }
 });
 
 // ── Run / Output ──────────────────────────────────────────────────────────────
+
 let currentSelection = '';
 let aiResponseText = '';   // pure AI text — used for copy
 
@@ -578,21 +896,27 @@ function appendTurnStart(engine) {
 
 runBtn.addEventListener('click', async () => {
   const text = inputArea.value.trim();
-  if (!activeRecipe || !text) return;
-
-  // Guard: engine must have an API key configured
-  const engine = activeRecipe.engine || '';
-  const engineCfg = engineConfigs[engine] || {};
-  if (!engineCfg.api_key) {
-    showView('output');
-    outputEl.innerHTML = '';
-    copyWrapEl.style.display = 'none';
-    outputEl.innerHTML = `<div class="output-error no-key-error">
-      No API key for <strong>${engine || 'this engine'}</strong>.
-      Go to <strong>Settings ⚙</strong> and add the key first.
-    </div>`;
+  if (!activeRecipe) {
+    console.warn('[runBtn] No active recipe selected');
     return;
   }
+  if (!text) {
+    console.warn('[runBtn] Input text is empty');
+    inputArea.focus();
+    return;
+  }
+
+  const isChain = Array.isArray(activeRecipe.steps) && activeRecipe.steps.length > 0;
+  const engine = activeRecipe.engine || Object.keys(engineConfigs)[0] || 'gemini';
+
+  console.log('[runBtn] Executing recipe:', {
+    recipeId: activeRecipe.id,
+    recipeName: activeRecipe.name,
+    isChain,
+    stepsCount: isChain ? activeRecipe.steps.length : 0,
+    engine,
+    inputLength: text.length,
+  });
 
   // Reset conversation for a new recipe run
   conversationHistory   = [];
@@ -601,13 +925,53 @@ runBtn.addEventListener('click', async () => {
   conversationTurnIndex = 0;
   conversationPromptId  = activeRecipe.id;
   aiResponseText = '';
+  pipelineStepOutputs = {};
+  activePipelineStepId = isChain ? (activeRecipe.steps[0]?.step_id || '') : '';
+
   showView('output');
   outputEl.innerHTML = '';
   copyWrapEl.style.display = 'none';
   copyFmtMenu.classList.add('hidden');
   followupBar.classList.add('hidden');
   setRunLoading(true);
-  outputEl.innerHTML = `<div class="output-thinking"><span class="output-engine-dot"></span>Thinking with <strong>${engine}</strong>…</div><div class="output-body" id="output-body"></div>`;
+
+  if (isChain) {
+    const stepperHtml = activeRecipe.steps.map((s, i) => `
+      <div class="stepper-step ${i === 0 ? 'active' : 'waiting'}" id="stepper-step-${escapeHtml(s.step_id)}" data-step-id="${escapeHtml(s.step_id)}" data-step-index="${i}">
+        <span class="stepper-num">${i + 1}</span>
+        <span class="stepper-name">${escapeHtml(s.name || s.step_id)}</span>
+      </div>
+    `).join('<span class="stepper-arrow">➔</span>');
+
+    const stepCardsHtml = activeRecipe.steps.map((s, i) => `
+      <div class="step-output-box ${i === 0 ? 'active' : 'pending'}" id="step-box-${escapeHtml(s.step_id)}" data-step-id="${escapeHtml(s.step_id)}" data-step-index="${i}">
+        <div class="step-output-header">
+          <div class="step-output-header-left">
+            <span class="step-output-pill">Step ${i + 1}</span>
+            <span class="step-output-name">${escapeHtml(s.name || s.step_id)}</span>
+          </div>
+          <div class="step-output-header-right">
+            <span class="step-output-badge-status" id="step-status-${escapeHtml(s.step_id)}">
+              ${i === 0 ? '<span class="status-dot-pulse"></span> Running...' : 'Waiting'}
+            </span>
+            <button type="button" class="step-copy-btn hidden" id="step-copy-${escapeHtml(s.step_id)}" title="Copy this step output">Copy Step</button>
+          </div>
+        </div>
+        <div class="step-output-content output-body" id="step-content-${escapeHtml(s.step_id)}">
+          <div class="step-placeholder-text">${i === 0 ? 'Generating response...' : 'Waiting for previous step...'}</div>
+        </div>
+      </div>
+    `).join('');
+
+    outputEl.innerHTML = `
+      <div class="pipeline-stepper-bar">${stepperHtml}</div>
+      <div class="pipeline-steps-container" id="pipeline-steps-container">${stepCardsHtml}</div>
+      <div id="output-body" style="display:none"></div>
+    `;
+  } else {
+    outputEl.innerHTML = `<div class="output-thinking"><span class="output-engine-dot"></span>Thinking with <strong>${escapeHtml(engine)}</strong>…</div><div class="output-body" id="output-body"></div>`;
+  }
+
 
   try {
     const recipeParams = activeRecipe.params || [];
@@ -621,14 +985,20 @@ runBtn.addEventListener('click', async () => {
       sessionId:  conversationSessionId,
     });
   } catch (err) {
+    console.error('[runBtn] Failed to invoke run_recipe:', err);
+    setRunLoading(false);
+    const thinking = outputEl.querySelector('.output-thinking');
+    if (thinking) thinking.remove();
+    const bodyEl = document.getElementById('output-body') || outputEl;
     const errEl = document.createElement('div');
     errEl.className = 'output-error';
-    errEl.textContent = String(err);
-    outputEl.innerHTML = '';
-    outputEl.appendChild(errEl);
-    setRunLoading(false);
+    errEl.innerHTML = `<strong>Error executing recipe:</strong> ${escapeHtml(String(err))}`;
+    bodyEl.appendChild(errEl);
   }
 });
+
+
+
 
 // Send follow-up message
 async function sendFollowup() {
@@ -748,6 +1118,207 @@ document.querySelectorAll('.copy-fmt-opt').forEach(opt => {
 
 document.addEventListener('click', () => copyFmtMenu.classList.add('hidden'));
 
+// ── Recipe Type & Chain Step Builder State ─────────────────────────────────
+let currentRecipeType = 'single'; // 'single' | 'chain'
+let currentSteps = [];
+
+const typeBtnSingle = document.getElementById('type-btn-single');
+const typeBtnChain  = document.getElementById('type-btn-chain');
+const singlePromptFields = document.getElementById('single-prompt-fields');
+const chainPromptFields  = document.getElementById('chain-prompt-fields');
+const addStepBtn    = document.getElementById('add-step-btn');
+const stepsContainer = document.getElementById('steps-container');
+
+function setRecipeType(type) {
+  currentRecipeType = type;
+  if (typeBtnSingle) typeBtnSingle.classList.toggle('active', type === 'single');
+  if (typeBtnChain)  typeBtnChain.classList.toggle('active', type === 'chain');
+  if (singlePromptFields) singlePromptFields.style.display = type === 'single' ? 'block' : 'none';
+  if (chainPromptFields)  chainPromptFields.classList.toggle('hidden', type !== 'chain');
+}
+
+if (typeBtnSingle) typeBtnSingle.addEventListener('click', () => setRecipeType('single'));
+if (typeBtnChain)  typeBtnChain.addEventListener('click', () => {
+  setRecipeType('chain');
+  if (currentSteps.length === 0) {
+    addStep({ step_id: 'diagnose', name: 'Step 1: Phân tích lỗi', template: 'Phân tích các lỗi logic và bug trong:\n\n{{selection}}', output_key: 'diagnosis' });
+    addStep({ step_id: 'fix_and_test', name: 'Step 2: Viết code fix & test', template: 'Dựa trên phân tích sau:\n\n{{diagnosis}}\n\nHãy viết code đã sửa và bộ unit tests:', output_key: 'result' });
+  }
+});
+
+function addStep(stepData = {}) {
+  const nextNum = currentSteps.length + 1;
+  const newStep = {
+    step_id: stepData.step_id || `step_${nextNum}`,
+    name: stepData.name || `Step ${nextNum}`,
+    template: stepData.template || (nextNum === 1 ? 'Analyze: {{selection}}' : `Process output: {{step_${nextNum - 1}_out}}`),
+    provider: stepData.provider || '',
+    model: stepData.model || '',
+    output_key: stepData.output_key || (nextNum === 1 ? 'step_1_out' : 'result'),
+  };
+  currentSteps.push(newStep);
+  renderStepCards();
+}
+
+function moveStep(index, delta) {
+  const targetIndex = index + delta;
+  if (targetIndex < 0 || targetIndex >= currentSteps.length) return;
+  const temp = currentSteps[index];
+  currentSteps[index] = currentSteps[targetIndex];
+  currentSteps[targetIndex] = temp;
+  renderStepCards();
+}
+
+function deleteStep(index) {
+  if (currentSteps.length <= 1) {
+    formError.textContent = 'A pipeline must have at least 1 step.';
+    return;
+  }
+  currentSteps.splice(index, 1);
+  renderStepCards();
+}
+
+function renderStepCards() {
+  if (!stepsContainer) return;
+  stepsContainer.innerHTML = '';
+
+  // Gather available variable keys
+  const availableVars = ['selection'];
+  currentSteps.forEach(s => {
+    if (s.output_key && s.output_key !== 'result' && !availableVars.includes(s.output_key)) {
+      availableVars.push(s.output_key);
+    }
+  });
+
+  currentSteps.forEach((step, idx) => {
+    const card = document.createElement('div');
+    card.className = 'step-card';
+    card.dataset.index = idx;
+
+    const chipsHtml = availableVars
+      .map(v => `<button type="button" class="step-var-chip" data-var="${v}">+ {{${v}}}</button>`)
+      .join('');
+
+    // Determine current provider for model datalist suggestions
+    let effectiveProvider = 'gemini';
+    if (step.provider) {
+      if (engineConfigs[step.provider]) {
+        effectiveProvider = engineConfigs[step.provider].provider || 'gemini';
+      } else {
+        effectiveProvider = step.provider.toLowerCase();
+      }
+    }
+    const modelSuggestions = ENGINE_MODELS[effectiveProvider] || [];
+
+    // Engine select options
+    const configuredOptions = Object.keys(engineConfigs).map(id => {
+      const cfg = engineConfigs[id] || {};
+      const isSel = step.provider === id;
+      return `<option value="${id}" ${isSel ? 'selected' : ''}>⚡ ${escapeHtml(cfg.name || id)} (${cfg.provider || id})</option>`;
+    }).join('');
+
+    card.innerHTML = `
+      <div class="step-card-header">
+        <span class="step-badge">Step ${idx + 1}</span>
+        <input type="text" class="step-name-input" value="${escapeHtml(step.name || '')}" placeholder="Step name (e.g. Diagnose error)" />
+        <div class="step-header-actions">
+          <button type="button" class="step-icon-btn" title="Move Up" ${idx === 0 ? 'disabled style="opacity:0.3"' : ''} data-action="up">↑</button>
+          <button type="button" class="step-icon-btn" title="Move Down" ${idx === currentSteps.length - 1 ? 'disabled style="opacity:0.3"' : ''} data-action="down">↓</button>
+          <button type="button" class="step-icon-btn danger" title="Delete Step" data-action="delete">✕</button>
+        </div>
+      </div>
+
+      <textarea class="form-input form-textarea step-template-textarea" placeholder="Prompt template for Step ${idx + 1}..."></textarea>
+
+      <div class="step-var-chips">
+        <span class="var-chip-label">Insert variable:</span>
+        ${chipsHtml}
+      </div>
+
+      <div class="step-meta-row">
+        <div class="step-meta-col">
+          <label class="step-meta-label">Engine / Provider</label>
+          <select class="step-select step-provider-select">
+            <option value="" ${!step.provider ? 'selected' : ''}>Default (Inherit Recipe Engine)</option>
+            ${configuredOptions ? `<optgroup label="Configured Engines">${configuredOptions}</optgroup>` : ''}
+            <optgroup label="Direct Providers">
+              <option value="gemini" ${step.provider === 'gemini' ? 'selected' : ''}>Google Gemini</option>
+              <option value="openai" ${step.provider === 'openai' ? 'selected' : ''}>OpenAI</option>
+              <option value="claude" ${step.provider === 'claude' ? 'selected' : ''}>Anthropic Claude</option>
+              <option value="ollama" ${step.provider === 'ollama' ? 'selected' : ''}>Ollama (Local)</option>
+            </optgroup>
+          </select>
+        </div>
+
+        <div class="step-meta-col">
+          <label class="step-meta-label">Model Override (Optional)</label>
+          <input type="text" class="step-text-input step-model-input" value="${escapeHtml(step.model || '')}" placeholder="e.g. gpt-4o, gemini-2.5-pro" list="step-model-list-${idx}" autocomplete="off" />
+          <datalist id="step-model-list-${idx}">
+            ${modelSuggestions.map(m => `<option value="${m}">`).join('')}
+          </datalist>
+        </div>
+
+        <div class="step-meta-col">
+          <label class="step-meta-label">Output Key</label>
+          <input type="text" class="step-text-input step-output-key" value="${escapeHtml(step.output_key || 'result')}" placeholder="e.g. diagnosis, result" />
+        </div>
+      </div>
+    `;
+
+    const nameInput = card.querySelector('.step-name-input');
+    const textarea = card.querySelector('.step-template-textarea');
+    textarea.value = step.template || '';
+    const outputKeyInput = card.querySelector('.step-output-key');
+    const providerSelect = card.querySelector('.step-provider-select');
+    const modelInput = card.querySelector('.step-model-input');
+
+    nameInput.addEventListener('input', (e) => { currentSteps[idx].name = e.target.value; });
+    textarea.addEventListener('input', (e) => { currentSteps[idx].template = e.target.value; });
+    outputKeyInput.addEventListener('input', (e) => { currentSteps[idx].output_key = e.target.value.trim(); });
+    modelInput.addEventListener('input', (e) => { currentSteps[idx].model = e.target.value.trim() || null; });
+
+    providerSelect.addEventListener('change', (e) => {
+      const selected = e.target.value || null;
+      currentSteps[idx].provider = selected;
+      // Update model suggestions datalist
+      let p = 'gemini';
+      if (selected) {
+        if (engineConfigs[selected]) p = engineConfigs[selected].provider || 'gemini';
+        else p = selected.toLowerCase();
+      }
+      const dl = card.querySelector(`#step-model-list-${idx}`);
+      if (dl) {
+        dl.innerHTML = (ENGINE_MODELS[p] || []).map(m => `<option value="${m}">`).join('');
+      }
+    });
+
+    card.querySelector('[data-action="up"]')?.addEventListener('click', () => moveStep(idx, -1));
+    card.querySelector('[data-action="down"]')?.addEventListener('click', () => moveStep(idx, 1));
+    card.querySelector('[data-action="delete"]')?.addEventListener('click', () => deleteStep(idx));
+
+    card.querySelectorAll('.step-var-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        const v = chip.dataset.var;
+        const tag = `{{${v}}}`;
+        const start = textarea.selectionStart || 0;
+        const end = textarea.selectionEnd || 0;
+        const val = textarea.value;
+        textarea.value = val.substring(0, start) + tag + val.substring(end);
+        currentSteps[idx].template = textarea.value;
+        textarea.focus();
+        textarea.setSelectionRange(start + tag.length, start + tag.length);
+      });
+    });
+
+    stepsContainer.appendChild(card);
+  });
+}
+
+
+if (addStepBtn) {
+  addStepBtn.addEventListener('click', () => addStep());
+}
+
 // ── Recipe Form (Create + Edit) ───────────────────────────────────────────────
 function openCreateForm() {
   editingRecipe = null;
@@ -759,6 +1330,8 @@ function openCreateForm() {
   document.getElementById('fc-tone').checked = false;
   document.getElementById('fc-length').checked = false;
   document.getElementById('fc-complexity').checked = false;
+  currentSteps = [];
+  setRecipeType('single');
   formError.textContent = '';
   formSaveBtn.disabled = false;
   formSaveBtn.textContent = 'Save Recipe';
@@ -776,6 +1349,16 @@ function openEditForm(recipe) {
   document.getElementById('fc-tone').checked = params.includes('tone');
   document.getElementById('fc-length').checked = params.includes('length');
   document.getElementById('fc-complexity').checked = params.includes('complexity');
+
+  if (Array.isArray(recipe.steps) && recipe.steps.length > 0) {
+    currentSteps = JSON.parse(JSON.stringify(recipe.steps));
+    setRecipeType('chain');
+    renderStepCards();
+  } else {
+    currentSteps = [];
+    setRecipeType('single');
+  }
+
   formError.textContent = '';
   formSaveBtn.disabled = false;
   formSaveBtn.textContent = 'Save Changes';
@@ -786,11 +1369,29 @@ addRecipeBtn.addEventListener('click', openCreateForm);
 formCancelBtn.addEventListener('click', () => showView('input'));
 
 formSaveBtn.addEventListener('click', async () => {
-  const name     = document.getElementById('f-name').value.trim();
-  const template = document.getElementById('f-template').value.trim();
+  const name = document.getElementById('f-name').value.trim();
+  if (!name) { formError.textContent = 'Name is required'; return; }
 
-  if (!name)     { formError.textContent = 'Name is required'; return; }
-  if (!template) { formError.textContent = 'Template is required'; return; }
+  let template = '';
+  let stepsJson = null;
+
+  if (currentRecipeType === 'chain') {
+    if (currentSteps.length === 0) {
+      formError.textContent = 'A pipeline must have at least 1 step.';
+      return;
+    }
+    for (let i = 0; i < currentSteps.length; i++) {
+      if (!currentSteps[i].template || !currentSteps[i].template.trim()) {
+        formError.textContent = `Step ${i + 1} template cannot be empty.`;
+        return;
+      }
+    }
+    stepsJson = JSON.stringify(currentSteps);
+    template = currentSteps[0].template; // fallback template
+  } else {
+    template = document.getElementById('f-template').value.trim();
+    if (!template) { formError.textContent = 'Template is required'; return; }
+  }
 
   formError.textContent = '';
   formSaveBtn.disabled = true;
@@ -806,11 +1407,14 @@ formSaveBtn.addEventListener('click', async () => {
     if (editingRecipe) {
       await invoke('update_recipe', {
         id: editingRecipe.id, name, description, template, engine,
-        params: checkedParams, icon: '',
+        params: checkedParams, icon: '', steps: stepsJson,
       });
     } else {
       const id = slugify(name) || `recipe_${Date.now()}`;
-      await invoke('save_recipe', { id, name, description, template, engine, params: checkedParams, icon: '' });
+      await invoke('save_recipe', {
+        id, name, description, template, engine,
+        params: checkedParams, icon: '', steps: stepsJson,
+      });
     }
     await loadRecipes();
     showView('input');
@@ -821,6 +1425,7 @@ formSaveBtn.addEventListener('click', async () => {
     formSaveBtn.textContent = editingRecipe ? 'Save Changes' : 'Save Recipe';
   }
 });
+
 
 // ── Window drag ───────────────────────────────────────────────────────────────
 // data-tauri-drag-region is set on #header but can be unreliable with
@@ -866,29 +1471,8 @@ const efModel = document.getElementById('ef-model');
 
 let editingEngine = null; // null = new, string = engine id being edited
 
-const ENGINE_MODELS = {
-  gemini: [
-    'gemini-2.5-pro',
-    'gemini-2.5-flash',
-    'gemini-2.5-flash-lite',
-    'gemini-2.0-flash',
-    'gemini-1.5-flash',
-    'gemini-1.5-pro',
-  ],
-  claude: [
-    'claude-opus-4-5',
-    'claude-sonnet-4-5',
-    'claude-haiku-4-5',
-  ],
-  openai: [
-    'gpt-4o',
-    'gpt-4o-mini',
-    'gpt-4-turbo',
-    'gpt-3.5-turbo',
-  ],
-};
-
 function updateModelDatalist(engineId) {
+
   const dl = document.getElementById('engine-model-list');
   dl.innerHTML = '';
   const models = ENGINE_MODELS[engineId] || [];

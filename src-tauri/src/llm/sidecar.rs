@@ -64,7 +64,25 @@ pub fn parse_sse_buffer(
             }
 
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data_str) {
+                let step_id = parsed.get("step_id").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let step_index = parsed.get("step_index").and_then(|v| v.as_u64()).map(|n| n as usize);
+                let total_steps = parsed.get("total_steps").and_then(|v| v.as_u64()).map(|n| n as usize);
+                let step_name = parsed.get("step_name").and_then(|v| v.as_str()).map(|s| s.to_string());
+
                 match current_event.as_str() {
+                    "status" => {
+                        let msg = parsed.get("message").and_then(|m| m.as_str()).unwrap_or(data_str);
+                        chunks.push(Chunk {
+                            text: msg.to_string(),
+                            done: false,
+                            error: None,
+                            step_id,
+                            step_index,
+                            total_steps,
+                            step_name,
+                            event_type: Some("status".into()),
+                        });
+                    }
                     "chunk" => {
                         let text = if let Some(t) = parsed.get("text").and_then(|v| v.as_str()) {
                             t.to_string()
@@ -79,6 +97,11 @@ pub fn parse_sse_buffer(
                                 text,
                                 done: false,
                                 error: None,
+                                step_id,
+                                step_index,
+                                total_steps,
+                                step_name,
+                                event_type: Some("chunk".into()),
                             });
                         }
                     }
@@ -91,6 +114,11 @@ pub fn parse_sse_buffer(
                             text: String::new(),
                             done: true,
                             error: Some(err_text.to_string()),
+                            step_id,
+                            step_index,
+                            total_steps,
+                            step_name,
+                            event_type: Some("error".into()),
                         });
                     }
                     "done" => {
@@ -98,6 +126,11 @@ pub fn parse_sse_buffer(
                             text: String::new(),
                             done: true,
                             error: None,
+                            step_id,
+                            step_index,
+                            total_steps,
+                            step_name,
+                            event_type: Some("done".into()),
                         });
                     }
                     _ => {
@@ -107,6 +140,11 @@ pub fn parse_sse_buffer(
                                 text: t.to_string(),
                                 done: false,
                                 error: None,
+                                step_id,
+                                step_index,
+                                total_steps,
+                                step_name,
+                                event_type: Some(current_event.clone()),
                             });
                         }
                     }
@@ -116,6 +154,11 @@ pub fn parse_sse_buffer(
                     text: data_str.to_string(),
                     done: false,
                     error: None,
+                    step_id: None,
+                    step_index: None,
+                    total_steps: None,
+                    step_name: None,
+                    event_type: Some("chunk".into()),
                 });
             }
         }
@@ -123,6 +166,7 @@ pub fn parse_sse_buffer(
 
     chunks
 }
+
 
 #[async_trait::async_trait]
 impl LlmClient for SidecarClient {
@@ -144,7 +188,7 @@ impl LlmClient for SidecarClient {
         };
 
         let payload = if req.messages.is_empty() {
-            json!({
+            let mut base_payload = json!({
                 "recipe_id": "prompt-stream",
                 "selection": req.prompt,
                 "provider": self.provider,
@@ -156,8 +200,15 @@ impl LlmClient for SidecarClient {
                     "api_key": self.api_key,
                     "template": "{{selection}}"
                 }
-            })
+            });
+
+            if let Some(steps) = &req.steps {
+                base_payload["steps"] = json!(steps);
+            }
+
+            base_payload
         } else {
+
             // Multi-turn chat / agent execution
             let history_json: Vec<serde_json::Value> = req
                 .messages
@@ -192,13 +243,7 @@ impl LlmClient for SidecarClient {
         let client = match reqwest::Client::builder().timeout(self.timeout).build() {
             Ok(c) => c,
             Err(e) => {
-                let _ = tx
-                    .send(Chunk {
-                        text: String::new(),
-                        done: true,
-                        error: Some(format!("Failed to create HTTP client: {}", e)),
-                    })
-                    .await;
+                let _ = tx.send(Chunk::new_error(format!("Failed to create HTTP client: {}", e))).await;
                 return;
             }
         };
@@ -225,13 +270,7 @@ impl LlmClient for SidecarClient {
                 } else {
                     format!("Sidecar request failed: {}", e)
                 };
-                let _ = tx
-                    .send(Chunk {
-                        text: String::new(),
-                        done: true,
-                        error: Some(err_msg),
-                    })
-                    .await;
+                let _ = tx.send(Chunk::new_error(err_msg)).await;
                 return;
             }
         };
@@ -239,13 +278,7 @@ impl LlmClient for SidecarClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            let _ = tx
-                .send(Chunk {
-                    text: String::new(),
-                    done: true,
-                    error: Some(format!("Sidecar error HTTP {}: {}", status, body)),
-                })
-                .await;
+            let _ = tx.send(Chunk::new_error(format!("Sidecar error HTTP {}: {}", status, body))).await;
             return;
         }
 
@@ -258,13 +291,7 @@ impl LlmClient for SidecarClient {
             let bytes = match item {
                 Ok(b) => b,
                 Err(e) => {
-                    let _ = tx
-                        .send(Chunk {
-                            text: String::new(),
-                            done: true,
-                            error: Some(format!("Stream read error: {}", e)),
-                        })
-                        .await;
+                    let _ = tx.send(Chunk::new_error(format!("Stream read error: {}", e))).await;
                     return;
                 }
             };
@@ -282,13 +309,8 @@ impl LlmClient for SidecarClient {
         }
 
         // Final done chunk if stream ended without explicit done event
-        let _ = tx
-            .send(Chunk {
-                text: String::new(),
-                done: true,
-                error: None,
-            })
-            .await;
+        let _ = tx.send(Chunk::new_done()).await;
+
     }
 }
 

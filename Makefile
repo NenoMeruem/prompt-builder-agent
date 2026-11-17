@@ -10,6 +10,8 @@ dev:
 		echo "Creating virtual environment in sidecar/venv..."; \
 		python3 -m venv sidecar/venv && ./sidecar/venv/bin/pip install -r sidecar/requirements.txt; \
 	fi
+	@echo "🧹 Freeing port 8000 if in use..."
+	@lsof -ti:8000 | xargs kill -9 2>/dev/null || true
 	@echo "🚀 Starting Python FastAPI Sidecar (Port 8000) & Tauri Overlay..."
 	@(trap 'kill 0' SIGINT SIGTERM EXIT; \
 		./sidecar/venv/bin/uvicorn sidecar.main:app --host 127.0.0.1 --port 8000 --reload & \
@@ -28,7 +30,10 @@ sidecar-dev:
 		echo "Creating virtual environment in sidecar/venv..."; \
 		python3 -m venv sidecar/venv && ./sidecar/venv/bin/pip install -r sidecar/requirements.txt; \
 	fi
+	@echo "🧹 Freeing port 8000 if in use..."
+	@lsof -ti:8000 | xargs kill -9 2>/dev/null || true
 	./sidecar/venv/bin/uvicorn sidecar.main:app --host 127.0.0.1 --port 8000 --reload
+
 
 # Install Python sidecar dependencies
 sidecar-install:

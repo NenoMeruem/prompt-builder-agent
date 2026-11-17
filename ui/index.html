@@ -143,28 +143,54 @@
           <div id="form-scroll">
             <div class="form-row">
               <label class="form-label">Name <span class="required">*</span></label>
-              <input class="form-input" id="f-name" type="text" placeholder="e.g. Summarize" />
+              <input class="form-input" id="f-name" type="text" placeholder="e.g. Deep Bug Fix" />
             </div>
             <div class="form-row">
               <label class="form-label">Description</label>
               <input class="form-input" id="f-desc" type="text" placeholder="Short description shown in instructions" />
             </div>
-            <div class="form-row grow">
-              <label class="form-label">Template <span class="required">*</span>  <span class="form-hint">— use {{selection}} for clipboard text</span></label>
-              <textarea class="form-input form-textarea" id="f-template" placeholder="Summarize the following text concisely:&#10;&#10;{{selection}}"></textarea>
-            </div>
+
+            <!-- Recipe Type Toggle -->
             <div class="form-row">
-              <label class="form-label">Engine</label>
-              <select class="form-input form-select" id="f-engine"></select>
-            </div>
-            <div class="form-row">
-              <label class="form-label">Parameters</label>
-              <div class="form-checks">
-                <label class="form-check"><input type="checkbox" value="tone" id="fc-tone" /> Style / Tone</label>
-                <label class="form-check"><input type="checkbox" value="length" id="fc-length" /> Length</label>
-                <label class="form-check"><input type="checkbox" value="complexity" id="fc-complexity" /> Complexity</label>
+              <label class="form-label">Recipe Type</label>
+              <div class="recipe-type-toggle">
+                <button type="button" class="type-tab-btn active" id="type-btn-single">📝 Single Prompt</button>
+                <button type="button" class="type-tab-btn" id="type-btn-chain">🔗 Prompt Chain (Pipeline)</button>
               </div>
             </div>
+
+            <!-- ── Single Prompt Mode ── -->
+            <div id="single-prompt-fields">
+              <div class="form-row grow">
+                <label class="form-label">Template <span class="required">*</span>  <span class="form-hint">— use {{selection}} for clipboard text</span></label>
+                <textarea class="form-input form-textarea" id="f-template" placeholder="Summarize the following text concisely:&#10;&#10;{{selection}}"></textarea>
+              </div>
+              <div class="form-row">
+                <label class="form-label">Engine</label>
+                <select class="form-input form-select" id="f-engine"></select>
+              </div>
+              <div class="form-row">
+                <label class="form-label">Parameters</label>
+                <div class="form-checks">
+                  <label class="form-check"><input type="checkbox" value="tone" id="fc-tone" /> Style / Tone</label>
+                  <label class="form-check"><input type="checkbox" value="length" id="fc-length" /> Length</label>
+                  <label class="form-check"><input type="checkbox" value="complexity" id="fc-complexity" /> Complexity</label>
+                </div>
+              </div>
+            </div>
+
+            <!-- ── Chained Prompt Mode ── -->
+            <div id="chain-prompt-fields" class="hidden">
+              <div class="chain-header-row">
+                <div>
+                  <span class="chain-section-title">Pipeline Steps</span>
+                  <span class="form-hint">— Runs sequential LCEL steps, passing previous step outputs forward</span>
+                </div>
+                <button type="button" class="add-step-btn" id="add-step-btn">+ Add Step</button>
+              </div>
+              <div id="steps-container" class="steps-container"></div>
+            </div>
+
           </div>
 
           <div class="form-actions">
@@ -172,6 +198,7 @@
             <button class="form-save-btn" id="form-save-btn">Save Recipe</button>
           </div>
         </div>
+
 
         <!-- History view -->
         <div id="view-history">

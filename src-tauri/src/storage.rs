@@ -48,6 +48,12 @@ fn run_migrations(conn: &Connection) -> SqlResult<()> {
     )
     .ok();
 
+    // Add steps column for multi-step chained pipelines
+    conn.execute_batch(
+        "ALTER TABLE prompts ADD COLUMN steps TEXT DEFAULT NULL;",
+    )
+    .ok();
+
     // ── run_history table ──────────────────────────────────────────────────
     // Recreate without FK constraint if the old version (with FK) exists.
     migrate_drop_history_fk(conn)?;
@@ -144,14 +150,16 @@ fn parse_dt(s: &str) -> DateTime<Utc> {
 pub fn prompt_create(conn: &Connection, p: &Prompt) -> SqlResult<()> {
     let vars = serde_json::to_string(&p.variables).unwrap_or_else(|_| "[]".into());
     let params_json = serde_json::to_string(&p.params).unwrap_or_else(|_| "[]".into());
+    let steps_json = p.steps.as_ref().and_then(|s| serde_json::to_string(s).ok());
     conn.execute(
         "INSERT INTO prompts
-            (id, name, description, engine, template, variables, params, icon, sort_order, created_at, updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            (id, name, description, engine, template, variables, params, icon, sort_order, created_at, updated_at, steps)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
         params![
             p.id, p.name, p.description, p.engine, p.template,
             vars, params_json, p.icon, p.sort_order,
             fmt_dt(&p.created_at), fmt_dt(&p.updated_at),
+            steps_json,
         ],
     )?;
     Ok(())
@@ -160,7 +168,7 @@ pub fn prompt_create(conn: &Connection, p: &Prompt) -> SqlResult<()> {
 /// Returns all prompts ordered by `sort_order ASC, created_at DESC`.
 pub fn prompt_list(conn: &Connection) -> SqlResult<Vec<Prompt>> {
     let mut stmt = conn.prepare(
-        "SELECT id,name,description,engine,template,variables,params,icon,sort_order,created_at,updated_at
+        "SELECT id,name,description,engine,template,variables,params,icon,sort_order,created_at,updated_at,steps
          FROM prompts ORDER BY sort_order ASC, created_at DESC",
     )?;
     collect_prompts(&mut stmt, [])
@@ -169,7 +177,7 @@ pub fn prompt_list(conn: &Connection) -> SqlResult<Vec<Prompt>> {
 /// Returns a single prompt by ID, or an error if not found.
 pub fn prompt_get(conn: &Connection, id: &str) -> SqlResult<Prompt> {
     let mut stmt = conn.prepare(
-        "SELECT id,name,description,engine,template,variables,params,icon,sort_order,created_at,updated_at
+        "SELECT id,name,description,engine,template,variables,params,icon,sort_order,created_at,updated_at,steps
          FROM prompts WHERE id=?1",
     )?;
     let mut rows = collect_prompts(&mut stmt, [id])?;
@@ -182,14 +190,15 @@ pub fn prompt_get(conn: &Connection, id: &str) -> SqlResult<Prompt> {
 pub fn prompt_update(conn: &Connection, p: &Prompt) -> SqlResult<()> {
     let vars = serde_json::to_string(&p.variables).unwrap_or_else(|_| "[]".into());
     let params_json = serde_json::to_string(&p.params).unwrap_or_else(|_| "[]".into());
+    let steps_json = p.steps.as_ref().and_then(|s| serde_json::to_string(s).ok());
     let updated_at = fmt_dt(&Utc::now());
     let n = conn.execute(
         "UPDATE prompts SET name=?1,description=?2,engine=?3,template=?4,
-            variables=?5,params=?6,icon=?7,sort_order=?8,updated_at=?9
-         WHERE id=?10",
+            variables=?5,params=?6,icon=?7,sort_order=?8,updated_at=?9,steps=?10
+         WHERE id=?11",
         params![
             p.name, p.description, p.engine, p.template,
-            vars, params_json, p.icon, p.sort_order, updated_at, p.id,
+            vars, params_json, p.icon, p.sort_order, updated_at, steps_json, p.id,
         ],
     )?;
     if n == 0 {
@@ -214,7 +223,7 @@ pub fn prompt_search(conn: &Connection, query: &str) -> SqlResult<Vec<Prompt>> {
     }
     let pattern = format!("%{}%", query);
     let mut stmt = conn.prepare(
-        "SELECT id,name,description,engine,template,variables,params,icon,sort_order,created_at,updated_at
+        "SELECT id,name,description,engine,template,variables,params,icon,sort_order,created_at,updated_at,steps
          FROM prompts WHERE name LIKE ?1 OR template LIKE ?1
          ORDER BY sort_order ASC, created_at DESC",
     )?;
@@ -253,25 +262,27 @@ fn collect_prompts(
 ) -> SqlResult<Vec<Prompt>> {
     let rows = stmt.query_map(params, |row| {
         Ok((
-            row.get::<_, String>(0)?,  // id
-            row.get::<_, String>(1)?,  // name
-            row.get::<_, String>(2)?,  // description
-            row.get::<_, String>(3)?,  // engine
-            row.get::<_, String>(4)?,  // template
-            row.get::<_, String>(5)?,  // variables JSON
-            row.get::<_, String>(6)?,  // params JSON
-            row.get::<_, String>(7)?,  // icon
-            row.get::<_, i64>(8)?,     // sort_order
-            row.get::<_, String>(9)?,  // created_at
-            row.get::<_, String>(10)?, // updated_at
+            row.get::<_, String>(0)?,          // id
+            row.get::<_, String>(1)?,          // name
+            row.get::<_, String>(2)?,          // description
+            row.get::<_, String>(3)?,          // engine
+            row.get::<_, String>(4)?,          // template
+            row.get::<_, String>(5)?,          // variables JSON
+            row.get::<_, String>(6)?,          // params JSON
+            row.get::<_, String>(7)?,          // icon
+            row.get::<_, i64>(8)?,             // sort_order
+            row.get::<_, String>(9)?,          // created_at
+            row.get::<_, String>(10)?,         // updated_at
+            row.get::<_, Option<String>>(11)?, // steps JSON
         ))
     })?;
 
     let mut prompts = Vec::new();
     for row in rows {
-        let (id, name, description, engine, template, vars_json, params_json, icon, sort_order, created_str, updated_str) = row?;
+        let (id, name, description, engine, template, vars_json, params_json, icon, sort_order, created_str, updated_str, steps_opt) = row?;
         let variables: Vec<String> = serde_json::from_str(&vars_json).unwrap_or_default();
         let params_vec: Vec<String> = serde_json::from_str(&params_json).unwrap_or_default();
+        let steps = steps_opt.and_then(|s| serde_json::from_str(&s).ok());
         prompts.push(Prompt {
             id,
             name,
@@ -280,6 +291,7 @@ fn collect_prompts(
             template,
             variables,
             params: params_vec,
+            steps,
             icon,
             sort_order,
             created_at: parse_dt(&created_str),
@@ -288,6 +300,7 @@ fn collect_prompts(
     }
     Ok(prompts)
 }
+
 
 // ---------------------------------------------------------------------------
 // History Store
@@ -430,6 +443,7 @@ mod tests {
             template: "Hello {{selection}}".into(),
             variables: vec!["selection".into()],
             params: vec![],
+            steps: None,
             icon: "🤖".into(),
             sort_order,
             created_at: now,
@@ -447,7 +461,41 @@ mod tests {
         let got = prompt_get(&conn, "p1").unwrap();
         assert_eq!(got.id, "p1");
         assert_eq!(got.engine, "gemini");
+        assert!(got.steps.is_none());
     }
+
+    #[test]
+    fn create_and_get_chained_recipe() {
+        use crate::models::RecipeStep;
+        let conn = test_db();
+        let mut p = make_prompt("chain-1", 0);
+        p.steps = Some(vec![
+            RecipeStep {
+                step_id: "step1".into(),
+                name: "Step 1".into(),
+                template: "Analyze {{selection}}".into(),
+                provider: Some("gemini".into()),
+                model: Some("gemini-2.5-flash-lite".into()),
+                api_key: None,
+                output_key: "step1_out".into(),
+            },
+            RecipeStep {
+                step_id: "step2".into(),
+                name: "Step 2".into(),
+                template: "Fix {{step1_out}}".into(),
+                provider: Some("openai".into()),
+                model: Some("gpt-4o-mini".into()),
+                api_key: None,
+                output_key: "result".into(),
+            }
+        ]);
+        prompt_create(&conn, &p).unwrap();
+        let got = prompt_get(&conn, "chain-1").unwrap();
+        assert_eq!(got.steps.as_ref().unwrap().len(), 2);
+        assert_eq!(got.steps.as_ref().unwrap()[0].step_id, "step1");
+        assert_eq!(got.steps.as_ref().unwrap()[1].output_key, "result");
+    }
+
 
     #[test]
     fn list_prompts_sorted_by_sort_order() {
@@ -602,7 +650,7 @@ mod tests {
         let conn = test_db();
         seed_default_recipes_if_empty(&conn).unwrap();
         let list = prompt_list(&conn).unwrap();
-        assert_eq!(list.len(), 4);
+        assert_eq!(list.len(), 5);
     }
 
     #[test]
@@ -611,6 +659,7 @@ mod tests {
         seed_default_recipes_if_empty(&conn).unwrap();
         seed_default_recipes_if_empty(&conn).unwrap();
         let list = prompt_list(&conn).unwrap();
-        assert_eq!(list.len(), 4);
+        assert_eq!(list.len(), 5);
     }
 }
+
