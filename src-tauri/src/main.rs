@@ -302,14 +302,21 @@ async fn send_chat(
     session_id: String,
     prompt_id: String,
     engine: String,
-    messages: Vec<Message>,
+    messages: serde_json::Value,
+    turn_index: Option<i64>,
 ) -> Result<(), String> {
-    if messages.is_empty() {
+    let parsed_messages: Vec<Message> = if let Some(s) = messages.as_str() {
+        serde_json::from_str(s).map_err(|e| format!("Invalid messages JSON: {}", e))?
+    } else {
+        serde_json::from_value(messages).map_err(|e| format!("Invalid messages array: {}", e))?
+    };
+
+    if parsed_messages.is_empty() {
         return Err("messages array is empty".into());
     }
 
     // Extract last user message for history
-    let user_input = messages.iter().rev()
+    let user_input = parsed_messages.iter().rev()
         .find(|m| m.role == "user")
         .map(|m| m.content.clone())
         .unwrap_or_default();
@@ -324,7 +331,7 @@ async fn send_chat(
     let req = LlmRequest {
         prompt: String::new(),
         model,
-        messages: messages.clone(),
+        messages: parsed_messages,
         steps: None,
     };
 
@@ -337,6 +344,7 @@ async fn send_chat(
     let eng = engine.clone();
     let sid = session_id.clone();
     let pid = prompt_id.clone();
+    let t_idx = turn_index.unwrap_or(1);
 
     // Spawn receiver task first
     tauri::async_runtime::spawn(async move {
@@ -355,7 +363,7 @@ async fn send_chat(
                     let record = RunRecord {
                         id: Uuid::new_v4().to_string(),
                         session_id: sid.clone(),
-                        turn_index: 0,
+                        turn_index: t_idx,
                         prompt_id: pid.clone(),
                         engine: eng.clone(),
                         input_text: user_input.clone(),
@@ -643,6 +651,17 @@ fn hide_window(app: AppHandle) {
     }
 }
 
+/// Dynamically resize the overlay window (used by Command Palette UX).
+#[tauri::command]
+fn resize_window(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("overlay") {
+        window
+            .set_size(tauri::Size::Logical(tauri::LogicalSize { width, height }))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// Export all prompt recipes as JSON.
 #[tauri::command]
 fn export_data(state: State<'_, AppState>) -> Result<String, String> {
@@ -651,9 +670,37 @@ fn export_data(state: State<'_, AppState>) -> Result<String, String> {
     serde_json::to_string_pretty(&recipes).map_err(|e| e.to_string())
 }
 
+/// Toggle native macOS vibrancy effect. Disable when opacity is very low so
+/// the window becomes truly transparent.
+#[tauri::command]
+fn set_vibrancy(window: tauri::WebviewWindow, enabled: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::window::{Effect, EffectState, EffectsBuilder};
+        if enabled {
+            window
+                .set_effects(
+                    EffectsBuilder::new()
+                        .effect(Effect::HudWindow)
+                        .state(EffectState::Active)
+                        .radius(16.0)
+                        .build(),
+                )
+                .map_err(|e| e.to_string())?;
+        } else {
+            // Clear effects by setting an empty effects builder
+            window
+                .set_effects(EffectsBuilder::new().build())
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 /// Import prompt recipes from a JSON string (array of Prompt objects).
 #[tauri::command]
 fn import_data(state: State<'_, AppState>, json_content: String) -> Result<String, String> {
+
     let recipes: Vec<models::Prompt> = serde_json::from_str(&json_content)
         .map_err(|e| format!("Invalid JSON: {}", e))?;
 
@@ -744,8 +791,20 @@ fn main() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            // Show overlay window on startup
+            // Show overlay window on startup & enable native macOS Dark HUD vibrancy blur
             if let Some(window) = app.get_webview_window("overlay") {
+                let _ = window.set_theme(Some(tauri::Theme::Dark));
+                #[cfg(target_os = "macos")]
+                {
+                    use tauri::window::{Effect, EffectState, EffectsBuilder};
+                    let _ = window.set_effects(
+                        EffectsBuilder::new()
+                            .effect(Effect::HudWindow)
+                            .state(EffectState::Active)
+                            .radius(16.0)
+                            .build(),
+                    );
+                }
                 window.show().ok();
                 window.set_focus().ok();
             }
@@ -844,8 +903,10 @@ fn main() {
             set_hotkey,
             get_clipboard,
             hide_window,
+            resize_window,
             export_data,
             import_data,
+            set_vibrancy,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

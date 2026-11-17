@@ -5,100 +5,158 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Promptly</title>
   <link rel="stylesheet" href="style.css" />
-  <!-- Apply theme immediately to prevent flash of wrong color -->
+  <!-- Apply Ghostty theme, opacity & background immediately to prevent flash -->
   <script>
     (function() {
-      var t = localStorage.getItem('theme') || 'claude';
-      var d = localStorage.getItem('dark') === 'true';
+      var validThemes = ['ghostty-default', 'catppuccin', 'tokyo-night', 'rose-pine', 'dracula', 'nord'];
+      var t = localStorage.getItem('ghostty_theme') || 'ghostty-default';
+      if (validThemes.indexOf(t) === -1) t = 'ghostty-default';
       document.documentElement.dataset.theme = t;
-      document.documentElement.dataset.dark = d ? 'true' : 'false';
+      document.documentElement.dataset.dark = 'true';
+
+      var op = localStorage.getItem('ghostty_opacity') || '0.88';
+      document.documentElement.style.setProperty('--app-opacity', op);
+
+      var blur = localStorage.getItem('pa_bg_blur');
+      if (blur !== null) {
+        document.documentElement.style.setProperty('--bg-image-blur', blur + 'px');
+      }
     })();
   </script>
 </head>
 <body>
+  <!-- Custom Background Wallpaper Layer -->
+  <div id="app-bg-layer" aria-hidden="true"></div>
   <div id="app">
 
-    <!-- ── Header ── -->
-    <div id="header" data-tauri-drag-region>
+    <!-- ── Top Omnibar (look / Raycast style) ── -->
+    <div id="header" class="omnibar" data-tauri-drag-region>
       <div class="header-left">
-        <!-- Logo icon -->
-        <div class="app-logo" aria-hidden="true">P</div>
-        <!-- Breadcrumb -->
-        <nav class="breadcrumb" aria-label="breadcrumb">
-          <span class="app-title">Promptly</span>
-          <span class="breadcrumb-sep" aria-hidden="true">
-            <svg viewBox="0 0 6 10" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M1 1l4 4-4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-          </span>
-          <span class="breadcrumb-page" id="breadcrumb-page"></span>
-        </nav>
-      </div>
-      <div class="header-right">
-        <button class="hbtn" title="Settings">
-          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+        <!-- Back button shown in sub-views (Output, Form, History, Settings) -->
+        <button class="omnibar-back-btn hidden" id="omnibar-back-btn" title="Back to Launcher (Esc)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>
+          </svg>
         </button>
-        <button class="hbtn" id="history-btn" title="History">
+
+        <!-- Logo / Search icon -->
+        <div class="app-logo" id="omnibar-logo" aria-hidden="true" title="Promptly Command Palette">
+          <svg class="omnibar-search-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+        </div>
+      </div>
+
+      <!-- Center: Command Search Input (visible in Launcher view) -->
+      <div class="omnibar-center" id="omnibar-search-wrap">
+        <input
+          type="text"
+          id="cmd-search"
+          class="cmd-search-input"
+          placeholder="Search recipes or commands… (↑↓ navigate, ↵ run)"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <button type="button" id="cmd-search-clear" class="cmd-search-clear hidden" title="Clear search (Esc)">✕</button>
+      </div>
+
+      <!-- Center: Breadcrumb Title (visible in Sub-views) -->
+      <nav class="breadcrumb hidden" id="omnibar-breadcrumb" aria-label="breadcrumb">
+        <span class="app-title">Promptly</span>
+        <span class="breadcrumb-sep" aria-hidden="true">
+          <svg viewBox="0 0 6 10" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M1 1l4 4-4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </span>
+        <span class="breadcrumb-page" id="breadcrumb-page"></span>
+      </nav>
+
+      <!-- Right: Context Pill + Quick Action Buttons -->
+      <div class="header-right">
+        <button type="button" class="context-pill" id="context-pill" title="Toggle Clipboard / Context Input (Tab)">
+          <span class="context-pill-dot" id="context-pill-dot"></span>
+          <span class="context-pill-text" id="context-pill-text">📋 Empty</span>
+          <kbd class="kbd-mini">Tab</kbd>
+        </button>
+
+        <button class="hbtn" id="add-recipe-btn" title="New Recipe (⌘N)">
+          <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <button class="hbtn" id="history-btn" title="Run History (⌘Y)">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
         </button>
-        <button class="hbtn close-hbtn" id="close-btn" title="Close">
+        <button class="hbtn" title="Settings (⌘,)">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+        </button>
+        <button class="hbtn close-hbtn" id="close-btn" title="Close (Esc)">
           <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </div>
     </div>
 
-    <!-- ── Body ── -->
+    <!-- ── Body (Single-Axis Command Palette Container) ── -->
     <div id="body">
-
-      <!-- Sidebar -->
-      <div id="sidebar">
-        <div class="sidebar-card">
-          <div class="sidebar-header" data-tauri-drag-region>
-            <span class="sidebar-title">Recipes</span>
-            <button class="add-recipe-btn" id="add-recipe-btn" title="Add recipe">
-              <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-            </button>
-          </div>
-          <div id="recipe-list"></div>
-        </div>
-      </div>
-
-      <!-- Main -->
       <div id="main">
 
-        <!-- Input view -->
+        <!-- ── View 1: Command Palette Launcher (#view-input) ── -->
         <div id="view-input">
-          <div class="section-block">
-            <div class="section-header">
-              <span class="section-label">Instructions</span>
+
+          <!-- Context Strip & Collapsible Selection Drawer -->
+          <div class="context-bar" id="context-bar">
+            <div class="context-strip" id="context-strip" title="Click or press Tab to edit input text">
+              <div class="context-strip-left">
+                <span class="context-strip-label">SELECTION</span>
+                <span class="context-strip-snippet" id="context-snippet">No clipboard text — press Tab or click here to type input…</span>
+              </div>
+              <div class="context-strip-right">
+                <span class="context-strip-meta" id="context-meta"></span>
+                <button type="button" class="context-toggle-btn" id="context-toggle-btn">Edit Text ▾</button>
+              </div>
             </div>
-            <div id="instruction-card">
-              <span id="instruction-text" class="ph">Select a recipe to see instructions…</span>
+
+            <!-- Collapsible Drawer for editing multi-line selection & viewing template -->
+            <div class="context-drawer hidden" id="context-drawer">
+              <div id="instruction-card">
+                <span id="instruction-text" class="ph">Select a recipe to see instructions…</span>
+              </div>
+              <div id="textarea-wrap">
+                <textarea id="input-area" placeholder="Paste or type text/code for {{selection}} here… (Press ⌘+Enter or click Send to run)"></textarea>
+                <button id="run-btn" disabled title="Run Recipe (↵)">
+                  <svg class="run-icon-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+                  </svg>
+                  <span class="run-icon-loading" style="display:none">
+                    <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+                  </span>
+                </button>
+              </div>
             </div>
           </div>
 
-          <div class="section-block grow">
-            <div id="textarea-wrap">
-              <textarea id="input-area" placeholder="Add text or keywords here…"></textarea>
-              <button id="run-btn" disabled title="Send (Enter)">
-                <svg class="run-icon-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                  <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
-                </svg>
-                <span class="run-icon-loading" style="display:none">
-                  <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-                </span>
-              </button>
-            </div>
-          </div>
-
+          <!-- Inline Parameter Chips (shown when active recipe has Tone / Length / Complexity) -->
           <div id="params-section"></div>
+
+          <!-- Scrollable Command Palette List (Recipes + Quick Actions) -->
+          <div class="palette-scroll" id="palette-scroll">
+            <div class="palette-group-header" id="recipes-group-header">
+              <span class="palette-group-title">Recipes</span>
+              <span class="palette-group-hint">Drag ⠿ to reorder • Double-click or ↵ to run</span>
+            </div>
+            <div id="recipe-list" role="listbox" aria-label="Recipes"></div>
+
+            <div class="palette-group-header" id="quick-actions-header">
+              <span class="palette-group-title">Quick Actions</span>
+            </div>
+            <div id="quick-actions-list" class="quick-actions-list"></div>
+          </div>
+
         </div>
 
-        <!-- Output view -->
+        <!-- ── View 2: Streaming Output & Multi-turn Follow-up (#view-output) ── -->
         <div id="view-output">
           <div class="section-header">
             <span class="section-label">Response</span>
-            <button class="back-btn" id="back-btn">← Back</button>
+            <button class="back-btn" id="back-btn">← Back to Commands (Esc)</button>
           </div>
           <div id="output-wrapper">
             <div id="output"></div>
@@ -124,7 +182,7 @@
 
           <!-- Follow-up input — shown after first response -->
           <div id="followup-bar" class="followup-bar hidden">
-            <textarea id="followup-input" class="followup-input" placeholder="Ask a follow-up…" rows="1"></textarea>
+            <textarea id="followup-input" class="followup-input" placeholder="Ask a follow-up… (Enter to send)" rows="1"></textarea>
             <button id="followup-btn" class="followup-btn" title="Send">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
                 <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
@@ -133,11 +191,11 @@
           </div>
         </div>
 
-        <!-- Form view: Create recipe -->
+        <!-- ── View 3: Recipe Form (Create / Edit Single or Chain) (#view-form) ── -->
         <div id="view-form">
           <div class="section-header">
             <span class="section-label" id="form-title">New Recipe</span>
-            <button class="back-btn" id="form-cancel-btn">✕ Cancel</button>
+            <button class="back-btn" id="form-cancel-btn">✕ Cancel (Esc)</button>
           </div>
 
           <div id="form-scroll">
@@ -147,7 +205,7 @@
             </div>
             <div class="form-row">
               <label class="form-label">Description</label>
-              <input class="form-input" id="f-desc" type="text" placeholder="Short description shown in instructions" />
+              <input class="form-input" id="f-desc" type="text" placeholder="Short description shown in command list" />
             </div>
 
             <!-- Recipe Type Toggle -->
@@ -199,24 +257,23 @@
           </div>
         </div>
 
-
-        <!-- History view -->
+        <!-- ── View 4: History (#view-history) ── -->
         <div id="view-history">
           <div class="section-header">
             <span class="section-label">History</span>
             <div style="display:flex;gap:8px;align-items:center">
               <button class="danger-btn" id="history-clear-btn">Clear All</button>
-              <button class="back-btn" id="history-close-btn">✕ Close</button>
+              <button class="back-btn" id="history-close-btn">✕ Close (Esc)</button>
             </div>
           </div>
           <div id="history-list"></div>
         </div>
 
-        <!-- Settings view -->
+        <!-- ── View 5: Settings (#view-settings) ── -->
         <div id="view-settings">
           <div class="section-header">
             <span class="section-label">Settings</span>
-            <button class="back-btn" id="settings-close-btn">✕ Close</button>
+            <button class="back-btn" id="settings-close-btn">✕ Close (Esc)</button>
           </div>
 
           <!-- Tab bar -->
@@ -252,6 +309,7 @@
                   <option value="gemini">Gemini</option>
                   <option value="claude">Claude</option>
                   <option value="openai">OpenAI</option>
+                  <option value="ollama">Ollama (Local)</option>
                 </select>
               </div>
               <div class="form-row">
@@ -305,57 +363,105 @@
 
           <!-- ── Tab: Appearance ── -->
           <div id="settings-tab-appearance" class="settings-tab-panel">
-            <p class="settings-desc">Customize how Promptly looks.</p>
+            <p class="settings-desc">Customize theme palette, transparency, and background wallpaper.</p>
 
+            <!-- Theme Swatches -->
             <div class="appearance-section">
-              <div class="appearance-section-label">Color theme</div>
+              <div class="appearance-section-header">
+                <span class="appearance-section-label">Color Theme</span>
+              </div>
               <div class="theme-swatches">
                 <div class="theme-swatch-item">
-                  <button class="theme-swatch active" data-theme="claude" title="Claude"></button>
-                  <span>Claude</span>
+                  <button class="theme-swatch active" data-theme="ghostty-default" title="Ghostty Default Dark (#282c34)"></button>
+                  <span>Ghostty Dark</span>
                 </div>
                 <div class="theme-swatch-item">
-                  <button class="theme-swatch" data-theme="forest" title="Forest"></button>
-                  <span>Forest</span>
+                  <button class="theme-swatch" data-theme="catppuccin" title="Catppuccin Mocha (#1e1e2e)"></button>
+                  <span>Catppuccin</span>
                 </div>
                 <div class="theme-swatch-item">
-                  <button class="theme-swatch" data-theme="ocean" title="Ocean"></button>
-                  <span>Ocean</span>
+                  <button class="theme-swatch" data-theme="tokyo-night" title="TokyoNight (#1a1b26)"></button>
+                  <span>TokyoNight</span>
                 </div>
                 <div class="theme-swatch-item">
-                  <button class="theme-swatch" data-theme="lavender" title="Lavender"></button>
-                  <span>Lavender</span>
+                  <button class="theme-swatch" data-theme="rose-pine" title="Rosé Pine (#191724)"></button>
+                  <span>Rosé Pine</span>
+                </div>
+                <div class="theme-swatch-item">
+                  <button class="theme-swatch" data-theme="dracula" title="Dracula (#282a36)"></button>
+                  <span>Dracula</span>
+                </div>
+                <div class="theme-swatch-item">
+                  <button class="theme-swatch" data-theme="nord" title="Nord (#2e3440)"></button>
+                  <span>Nord</span>
                 </div>
               </div>
             </div>
 
+            <!-- Opacity & Blur Sliders -->
             <div class="appearance-section">
-              <div class="appearance-section-label">Mode</div>
-              <div class="dark-mode-row">
-                <span class="dark-mode-label">Dark mode</span>
-                <button class="dark-toggle" id="dark-toggle" aria-pressed="false">
-                  <span class="dark-toggle-thumb"></span>
-                </button>
+              <div class="appearance-section-label">Transparency &amp; Frosted Glass (Ghostty Style)</div>
+
+              <div class="slider-row">
+                <div class="slider-label-row">
+                  <span class="slider-title">Background Opacity</span>
+                  <span class="slider-value" id="opacity-val-label">88%</span>
+                </div>
+                <input type="range" id="opacity-slider" class="appearance-slider" min="0" max="100" step="1" value="88" />
+              </div>
+
+              <div class="slider-row">
+                <div class="slider-label-row">
+                  <span class="slider-title">Wallpaper Blur</span>
+                  <span class="slider-value" id="bg-blur-val-label">8px</span>
+                </div>
+                <input type="range" id="bg-blur-slider" class="appearance-slider" min="0" max="32" step="1" value="8" />
+              </div>
+            </div>
+
+            <!-- Background Wallpaper -->
+            <div class="appearance-section">
+              <div class="appearance-section-header">
+                <span class="appearance-section-label">Background Wallpaper</span>
+                <button type="button" id="bg-clear-btn" class="bg-clear-btn hidden">✕ Remove</button>
+              </div>
+
+              <!-- Upload or URL -->
+              <div class="bg-controls-row">
+                <input type="file" id="bg-file-input" accept="image/*" style="display:none" />
+                <button type="button" id="bg-upload-btn" class="backup-btn-action secondary">🖼 Upload Image…</button>
+                <input type="text" id="bg-url-input" class="form-input bg-url-input" placeholder="Or paste image URL (https://…)" autocomplete="off" />
+                <button type="button" id="bg-url-apply-btn" class="backup-btn-action">Apply</button>
+              </div>
+
+              <!-- Built-in Preset Wallpapers -->
+              <div class="bg-presets-row">
+                <span class="bg-presets-label">Presets:</span>
+                <button type="button" class="bg-preset-chip active" data-bg-preset="none">None</button>
+                <button type="button" class="bg-preset-chip" data-bg-preset="catppuccin-aurora">Catppuccin Aurora</button>
+                <button type="button" class="bg-preset-chip" data-bg-preset="tokyo-cyber">Tokyo Cyber</button>
+                <button type="button" class="bg-preset-chip" data-bg-preset="rose-dusk">Rosé Dusk</button>
+                <button type="button" class="bg-preset-chip" data-bg-preset="dracula-nebula">Dracula Nebula</button>
               </div>
             </div>
           </div>
 
           <!-- ── Tab: Backup ── -->
           <div id="settings-tab-backup" class="settings-tab-panel">
-            <p class="settings-desc">Export or import your prompt recipes and engine configurations.</p>
+            <p class="settings-desc">Export or import your prompt recipes.</p>
 
             <div class="backup-section">
               <div class="backup-label">Export Data</div>
-              <p class="backup-hint">Download all your prompt recipes and engine configurations as a CSV file.</p>
-              <button id="backup-export-btn" class="backup-btn-action">Export to CSV</button>
+              <p class="backup-hint">Download all your prompt recipes as a JSON backup file.</p>
+              <button id="backup-export-btn" class="backup-btn-action">Export to JSON</button>
             </div>
 
             <div class="backup-section">
               <div class="backup-label">Import Data</div>
-              <p class="backup-hint">Import prompt recipes and engine configurations from a CSV file. Existing items with the same ID will be updated.</p>
+              <p class="backup-hint">Import prompt recipes from a JSON backup file.</p>
               <div class="import-controls">
-                <input type="file" id="backup-import-file" accept=".csv" style="display: none;" />
-                <button id="backup-import-btn" class="backup-btn-action secondary">Choose CSV File</button>
+                <input type="file" id="backup-import-file" accept=".json,.csv" style="display: none;" />
+                <button id="backup-import-btn" class="backup-btn-action secondary">Choose File</button>
                 <span id="import-file-name" class="import-file-name">No file selected</span>
               </div>
               <button id="backup-import-submit-btn" class="backup-btn-action" style="margin-top: 10px;" disabled>Import Data</button>
@@ -369,36 +475,37 @@
             <div class="about-logo">
               <div class="about-icon">✦</div>
               <div class="about-app-name">Promptly</div>
-              <div class="about-version" id="about-version">v0.1.0</div>
+              <div class="about-version" id="about-version">v0.2.0 — Command Palette Edition</div>
             </div>
 
             <p class="about-desc">
-              A lightweight overlay for running AI prompt recipes against clipboard content —
-              right from any app, without switching windows.
+              A keyboard-first AI Command Palette overlay for running single &amp; chained prompt recipes
+              against clipboard content — right from any app, without switching windows.
             </p>
 
             <div class="about-features">
               <div class="about-feature-row">
-                <span>Reads clipboard automatically on trigger</span>
+                <span>Keyboard-first Command Palette UX (↑↓ navigate, ↵ run, Tab edit)</span>
               </div>
               <div class="about-feature-row">
-                <span>Streams responses in real time</span>
+                <span>Reads clipboard automatically on global hotkey trigger</span>
               </div>
               <div class="about-feature-row">
-                <span>Reusable recipe templates with variables</span>
+                <span>Multi-step LCEL Prompt Chains &amp; real-time streaming</span>
               </div>
               <div class="about-feature-row">
-                <span>Supports OpenAI, Google Gemini, Claude</span>
+                <span>Supports Google Gemini, OpenAI, Claude &amp; local Ollama</span>
               </div>
               <div class="about-feature-row">
-                <span>SQLite storage — no cloud, fully local</span>
+                <span>Local-first SQLite storage — privacy-focused</span>
               </div>
             </div>
 
             <div class="about-stack">
               <span class="about-stack-label">Built with</span>
-              <span class="about-chip">Tauri</span>
+              <span class="about-chip">Tauri v2</span>
               <span class="about-chip">Rust</span>
+              <span class="about-chip">LangChain</span>
             </div>
           </div>
 
@@ -406,6 +513,21 @@
 
       </div><!-- /main -->
     </div><!-- /body -->
+
+    <!-- ── Bottom Status & Keyboard Shortcut Bar (look / Raycast style) ── -->
+    <div id="palette-footer" class="palette-footer">
+      <div class="footer-left">
+        <span class="footer-engine-dot"></span>
+        <span id="footer-status-text">Promptly Ready</span>
+      </div>
+      <div class="footer-right" id="footer-shortcuts">
+        <span class="footer-sc"><kbd>↑↓</kbd> Navigate</span>
+        <span class="footer-sc"><kbd>↵</kbd> Run</span>
+        <span class="footer-sc"><kbd>Tab</kbd> Context</span>
+        <span class="footer-sc"><kbd>⌘E</kbd> Edit</span>
+        <span class="footer-sc"><kbd>Esc</kbd> Close</span>
+      </div>
+    </div>
 
     <!-- Delete confirmation modal -->
     <div id="delete-modal" class="modal-overlay">

@@ -14,6 +14,13 @@ let pendingDeleteId     = null;  // recipe
 let pendingDeleteEngine = null;  // engine
 let engineConfigs = {};
 let allRecipes    = [];   // full list cache for re-render
+let filteredRecipes = []; // recipes matching current #cmd-search query
+let searchQuery   = '';
+let currentView   = 'input';
+let isContextDrawerOpen = false;
+// Keyboard navigation index across [filteredRecipes..., filteredQuickActions...]
+let paletteSelectedIndex = 0;
+
 const paramValues = { tone: 'casual', length: 'short', complexity: 'normal' };
 
 const PARAM_CONFIG = {
@@ -50,34 +57,113 @@ const ENGINE_MODELS = {
   ],
 };
 
+// ── Quick Actions in Command Palette (look / Raycast style) ──────────────────
+const QUICK_ACTIONS = [
+  {
+    id: 'qa_new_recipe',
+    name: 'Create New Recipe',
+    desc: 'Build a single prompt template or multi-step LCEL pipeline',
+    icon: '➕',
+    kbd: '⌘N',
+    keywords: 'new add create recipe chain pipeline template',
+    run: () => openCreateForm(),
+  },
+  {
+    id: 'qa_edit_context',
+    name: 'Edit Selection / Clipboard Text',
+    desc: 'Expand or edit the text injected into {{selection}}',
+    icon: '📝',
+    kbd: 'Tab',
+    keywords: 'clipboard selection context input text paste edit',
+    run: () => toggleContextDrawer(true, true),
+  },
+  {
+    id: 'qa_history',
+    name: 'View Run History',
+    desc: 'Browse past prompt executions and multi-turn threads',
+    icon: '🕒',
+    kbd: '⌘Y',
+    keywords: 'history log past runs conversations threads',
+    run: () => { showView('history'); loadHistory(); },
+  },
+  {
+    id: 'qa_settings',
+    name: 'AI Engines & Settings',
+    desc: 'Configure API keys, models, global hotkey, and backup',
+    icon: '⚙️',
+    kbd: '⌘,',
+    keywords: 'settings config engines api key model hotkey theme backup',
+    run: () => openSettingsView(),
+  },
+  {
+    id: 'qa_appearance',
+    name: 'Theme, Opacity & Wallpaper',
+    desc: 'Switch between Catppuccin, Tokyo Night, Rosé Pine, Dracula, custom background & opacity',
+    icon: '🎨',
+    kbd: '⌘T',
+    keywords: 'theme catppuccin tokyo night rose pine dracula wallpaper background image opacity blur appearance',
+    run: async () => {
+      await openSettingsView();
+      switchSettingsTab('appearance');
+    },
+  },
+  {
+    id: 'qa_theme_dark',
+    name: 'Toggle Dark / Light Mode',
+    desc: 'Switch between light and dark frosted glass appearance',
+    icon: '🌗',
+    kbd: '⌘D',
+    keywords: 'dark light mode theme appearance color',
+    run: () => applyDark(document.documentElement.dataset.dark !== 'true'),
+  },
+];
+
+let filteredQuickActions = [...QUICK_ACTIONS];
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
-const outputEl        = document.getElementById('output');
-const runBtn          = document.getElementById('run-btn');
-const copyBtn         = document.getElementById('copy-btn');
-const copyWrapEl      = document.getElementById('copy-wrap');
-const copyFmtToggle   = document.getElementById('copy-fmt-toggle');
-const copyFmtMenu     = document.getElementById('copy-fmt-menu');
-const closeBtn        = document.getElementById('close-btn');
-const backBtn         = document.getElementById('back-btn');
-const addRecipeBtn    = document.getElementById('add-recipe-btn');
-const formCancelBtn   = document.getElementById('form-cancel-btn');
-const formSaveBtn     = document.getElementById('form-save-btn');
-const formTitle       = document.getElementById('form-title');
-const formError       = document.getElementById('form-error');
-const recipeListEl    = document.getElementById('recipe-list');
-const inputArea       = document.getElementById('input-area');
-const instructionText = document.getElementById('instruction-text');
-const breadcrumbPage  = document.getElementById('breadcrumb-page');
-const paramsSection   = document.getElementById('params-section');
-const viewInput       = document.getElementById('view-input');
-const viewOutput      = document.getElementById('view-output');
-const viewForm        = document.getElementById('view-form');
-const viewSettings    = document.getElementById('view-settings');
-const settingsBtn     = document.querySelector('.hbtn[title="Settings"]');
-const settingsCloseBtn = document.getElementById('settings-close-btn');
-const settingsMsg     = document.getElementById('settings-msg');
-
+const outputEl          = document.getElementById('output');
+const runBtn            = document.getElementById('run-btn');
+const copyBtn           = document.getElementById('copy-btn');
+const copyWrapEl        = document.getElementById('copy-wrap');
+const copyFmtToggle     = document.getElementById('copy-fmt-toggle');
+const copyFmtMenu       = document.getElementById('copy-fmt-menu');
+const closeBtn          = document.getElementById('close-btn');
+const backBtn           = document.getElementById('back-btn');
+const omnibarBackBtn    = document.getElementById('omnibar-back-btn');
+const omnibarSearchWrap = document.getElementById('omnibar-search-wrap');
+const omnibarBreadcrumb = document.getElementById('omnibar-breadcrumb');
+const cmdSearchInput    = document.getElementById('cmd-search');
+const cmdSearchClear    = document.getElementById('cmd-search-clear');
+const contextPill       = document.getElementById('context-pill');
+const contextPillText   = document.getElementById('context-pill-text');
+const contextStrip      = document.getElementById('context-strip');
+const contextSnippet    = document.getElementById('context-snippet');
+const contextMeta       = document.getElementById('context-meta');
+const contextToggleBtn  = document.getElementById('context-toggle-btn');
+const contextDrawer     = document.getElementById('context-drawer');
+const addRecipeBtn      = document.getElementById('add-recipe-btn');
+const formCancelBtn     = document.getElementById('form-cancel-btn');
+const formSaveBtn       = document.getElementById('form-save-btn');
+const formTitle         = document.getElementById('form-title');
+const formError         = document.getElementById('form-error');
+const recipeListEl      = document.getElementById('recipe-list');
+const quickActionsListEl = document.getElementById('quick-actions-list');
+const recipesGroupHeader = document.getElementById('recipes-group-header');
+const quickActionsHeader = document.getElementById('quick-actions-header');
+const inputArea         = document.getElementById('input-area');
+const instructionText   = document.getElementById('instruction-text');
+const breadcrumbPage    = document.getElementById('breadcrumb-page');
+const paramsSection     = document.getElementById('params-section');
+const viewInput         = document.getElementById('view-input');
+const viewOutput        = document.getElementById('view-output');
+const viewForm          = document.getElementById('view-form');
+const viewSettings      = document.getElementById('view-settings');
+const viewHistory       = document.getElementById('view-history');
+const settingsBtn       = document.querySelector('.hbtn[title^="Settings"]');
+const settingsCloseBtn  = document.getElementById('settings-close-btn');
+const settingsMsg       = document.getElementById('settings-msg');
+const footerStatusText  = document.getElementById('footer-status-text');
+const footerShortcuts   = document.getElementById('footer-shortcuts');
 
 // ── Markdown renderer ─────────────────────────────────────────────────────────
 
@@ -102,12 +188,9 @@ function inlineMd(text) {
 
 function renderMarkdown(raw, _depth = 0) {
   if (!raw || typeof raw !== 'string') return '';
-  // Guard against infinite recursion (e.g. deeply nested blockquotes)
   if (_depth > 4) return escapeHtml(raw);
 
   try {
-    // Extract fenced code blocks to protect them from inline processing
-    // Uses a non-backtracking approach: split on ``` lines manually
     const fences = [];
     const fenceLines = raw.split('\n');
     const processedLines = [];
@@ -127,7 +210,6 @@ function renderMarkdown(raw, _depth = 0) {
         } else { fenceContent.push(fl); }
       }
     }
-    // Handle unclosed fence at end of stream
     if (inFence) {
       fences.push({ lang: fenceLang, code: fenceContent.join('\n') });
       processedLines.push(`\x01F${fences.length - 1}\x01`);
@@ -151,31 +233,26 @@ function renderMarkdown(raw, _depth = 0) {
     while (i < lines.length) {
       const line = lines[i];
 
-      // Code fence placeholder
       if (/^\x01F\d+\x01$/.test(line.trim())) {
         out.push(flushFence(line.trim()));
         i++; continue;
       }
-      // Heading
       const hm = line.match(/^(#{1,6}) (.+)/);
       if (hm) {
         const lvl = Math.min(hm[1].length, 6);
         out.push(`<h${lvl} class="md-h${lvl}">${inlineMd(hm[2].trim())}</h${lvl}>`);
         i++; continue;
       }
-      // Horizontal rule
       if (/^[-*_]{3,}$/.test(line.trim())) {
         out.push('<hr class="md-hr">');
         i++; continue;
       }
-      // Blockquote — use depth+1 to prevent infinite recursion
       if (line.startsWith('> ')) {
         const qlines = [];
         while (i < lines.length && lines[i].startsWith('> ')) { qlines.push(lines[i].slice(2)); i++; }
         out.push(`<blockquote class="md-blockquote">${renderMarkdown(qlines.join('\n'), _depth + 1)}</blockquote>`);
         continue;
       }
-      // Unordered list
       if (/^[-*+] /.test(line)) {
         const items = [];
         while (i < lines.length && /^[-*+] /.test(lines[i])) {
@@ -185,7 +262,6 @@ function renderMarkdown(raw, _depth = 0) {
         out.push(`<ul class="md-ul">${items.join('')}</ul>`);
         continue;
       }
-      // Ordered list
       if (/^\d+[.)]\s/.test(line)) {
         const items = [];
         while (i < lines.length && /^\d+[.)]\s/.test(lines[i])) {
@@ -195,10 +271,8 @@ function renderMarkdown(raw, _depth = 0) {
         out.push(`<ol class="md-ol">${items.join('')}</ol>`);
         continue;
       }
-      // Blank line
       if (line.trim() === '') { i++; continue; }
 
-      // Paragraph — gather lines until block boundary
       const plines = [];
       while (i < lines.length) {
         const l = lines[i];
@@ -247,22 +321,292 @@ function trashIcon() {
   </svg>`;
 }
 
-
-function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+function capitalize(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''; }
 
 function slugify(s) {
   return s.toLowerCase().trim().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
 }
 
+// ── Dynamic Window Sizing & Footer Updates ────────────────────────────────────
+
+function updateWindowSizeForView(viewName) {
+  let targetHeight = 500;
+  if (viewName === 'input') {
+    targetHeight = isContextDrawerOpen ? 560 : 480;
+  } else {
+    targetHeight = 580;
+  }
+  invoke('resize_window', { width: 740, height: targetHeight }).catch(() => {});
+}
+
+function updateFooterBar() {
+  if (!footerStatusText || !footerShortcuts) return;
+
+  if (currentView === 'input') {
+    if (activeRecipe) {
+      const eng = activeRecipe.engine || Object.keys(engineConfigs)[0] || 'gemini';
+      const engName = engineConfigs[eng]?.name || capitalize(eng);
+      const isChain = Array.isArray(activeRecipe.steps) && activeRecipe.steps.length > 0;
+      const modeLabel = isChain ? `Pipeline (${activeRecipe.steps.length} steps)` : engName;
+      footerStatusText.textContent = `${activeRecipe.name} • ${modeLabel}`;
+    } else {
+      footerStatusText.textContent = 'Select a recipe or command';
+    }
+    footerShortcuts.innerHTML = `
+      <span class="footer-sc"><kbd>↑↓</kbd> Navigate</span>
+      <span class="footer-sc"><kbd>↵</kbd> Run</span>
+      <span class="footer-sc"><kbd>Tab</kbd> Context</span>
+      <span class="footer-sc"><kbd>⌘E</kbd> Edit</span>
+      <span class="footer-sc"><kbd>Esc</kbd> Close</span>
+    `;
+  } else if (currentView === 'output') {
+    const eng = conversationEngine || activeRecipe?.engine || 'AI';
+    footerStatusText.textContent = `Streaming Response • ${engineConfigs[eng]?.name || eng}`;
+    footerShortcuts.innerHTML = `
+      <span class="footer-sc"><kbd>↵</kbd> Follow-up</span>
+      <span class="footer-sc"><kbd>⌘C</kbd> Copy</span>
+      <span class="footer-sc"><kbd>Esc</kbd> Back</span>
+    `;
+  } else if (currentView === 'form') {
+    footerStatusText.textContent = editingRecipe ? `Editing: ${editingRecipe.name}` : 'Creating New Recipe';
+    footerShortcuts.innerHTML = `
+      <span class="footer-sc"><kbd>Esc</kbd> Cancel</span>
+    `;
+  } else if (currentView === 'history') {
+    footerStatusText.textContent = 'Execution History';
+    footerShortcuts.innerHTML = `
+      <span class="footer-sc"><kbd>Click</kbd> Expand</span>
+      <span class="footer-sc"><kbd>Esc</kbd> Back</span>
+    `;
+  } else if (currentView === 'settings') {
+    footerStatusText.textContent = 'Promptly Settings';
+    footerShortcuts.innerHTML = `
+      <span class="footer-sc"><kbd>Esc</kbd> Back</span>
+    `;
+  }
+}
+
+// ── Context Strip & Collapsible Drawer ────────────────────────────────────────
+
+function toggleContextDrawer(forceOpen, focusTextarea = false) {
+  isContextDrawerOpen = typeof forceOpen === 'boolean' ? forceOpen : !isContextDrawerOpen;
+  if (contextDrawer) contextDrawer.classList.toggle('hidden', !isContextDrawerOpen);
+  if (contextPill) contextPill.classList.toggle('open', isContextDrawerOpen);
+  if (contextToggleBtn) {
+    contextToggleBtn.textContent = isContextDrawerOpen ? 'Hide Text ▴' : 'Edit Text ▾';
+  }
+  updateWindowSizeForView(currentView);
+
+  if (isContextDrawerOpen && focusTextarea && inputArea) {
+    setTimeout(() => inputArea.focus(), 20);
+  } else if (!isContextDrawerOpen && currentView === 'input' && cmdSearchInput) {
+    setTimeout(() => cmdSearchInput.focus(), 20);
+  }
+}
+
+function updateContextUI() {
+  const val = (inputArea?.value || '').trim();
+  const hasText = val.length > 0;
+
+  if (contextPill) {
+    contextPill.classList.toggle('has-text', hasText);
+  }
+
+  if (!hasText) {
+    if (contextPillText) contextPillText.textContent = '📋 No Context';
+    if (contextSnippet) {
+      contextSnippet.textContent = 'No clipboard text — press Tab or click here to type input…';
+      contextSnippet.classList.add('empty');
+    }
+    if (contextMeta) contextMeta.textContent = '';
+  } else {
+    const words = val.split(/\s+/).filter(Boolean).length;
+    const lines = val.split('\n').length;
+    const metaLabel = lines > 1 ? `${lines} lines • ${words}w` : `${words} words`;
+    if (contextPillText) contextPillText.textContent = `📋 ${words}w`;
+    if (contextSnippet) {
+      const singleLine = val.replace(/\s+/g, ' ').slice(0, 95);
+      contextSnippet.textContent = singleLine + (val.length > 95 ? '…' : '');
+      contextSnippet.classList.remove('empty');
+    }
+    if (contextMeta) contextMeta.textContent = metaLabel;
+  }
+}
+
+if (contextPill) {
+  contextPill.addEventListener('click', () => {
+    if (currentView !== 'input') showView('input');
+    toggleContextDrawer(undefined, true);
+  });
+}
+if (contextStrip) {
+  contextStrip.addEventListener('click', (e) => {
+    if (e.target.closest('#context-toggle-btn')) return;
+    toggleContextDrawer(undefined, true);
+  });
+}
+if (contextToggleBtn) {
+  contextToggleBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleContextDrawer(undefined, true);
+  });
+}
+
 // ── View switching ────────────────────────────────────────────────────────────
-const viewHistory  = document.getElementById('view-history');
 
 function showView(name) {
+  currentView = name;
   viewInput.style.display  = name === 'input'    ? 'flex' : 'none';
   viewOutput.classList.toggle('visible',   name === 'output');
   viewForm.classList.toggle('visible',     name === 'form');
   viewSettings.classList.toggle('visible', name === 'settings');
   viewHistory.classList.toggle('visible',  name === 'history');
+
+  const isLauncher = name === 'input';
+  if (omnibarBackBtn)    omnibarBackBtn.classList.toggle('hidden', isLauncher);
+  if (omnibarSearchWrap) omnibarSearchWrap.classList.toggle('hidden', !isLauncher);
+  if (omnibarBreadcrumb) omnibarBreadcrumb.classList.toggle('hidden', isLauncher);
+
+  if (!isLauncher && breadcrumbPage) {
+    if (name === 'output')   breadcrumbPage.textContent = activeRecipe?.name || 'Response';
+    if (name === 'form')     breadcrumbPage.textContent = editingRecipe ? 'Edit Recipe' : 'New Recipe';
+    if (name === 'history')  breadcrumbPage.textContent = 'Run History';
+    if (name === 'settings') breadcrumbPage.textContent = 'Settings';
+  }
+
+  updateWindowSizeForView(name);
+  updateFooterBar();
+
+  if (isLauncher && cmdSearchInput) {
+    setTimeout(() => cmdSearchInput.focus(), 20);
+  }
+}
+
+if (omnibarBackBtn) {
+  omnibarBackBtn.addEventListener('click', () => showView('input'));
+}
+
+// ── Command Palette Search & Filtering ────────────────────────────────────────
+
+function filterPaletteItems(query) {
+  searchQuery = (query || '').trim().toLowerCase();
+  if (cmdSearchClear) {
+    cmdSearchClear.classList.toggle('hidden', searchQuery.length === 0);
+  }
+
+  if (!searchQuery) {
+    filteredRecipes = [...allRecipes];
+    filteredQuickActions = [...QUICK_ACTIONS];
+  } else {
+    filteredRecipes = allRecipes.filter(r => {
+      const hay = [
+        r.name || '',
+        r.description || '',
+        r.id || '',
+        r.template || '',
+        r.engine || '',
+        ...(Array.isArray(r.steps) ? r.steps.map(s => `${s.name} ${s.step_id}`) : []),
+      ].join(' ').toLowerCase();
+      return hay.includes(searchQuery);
+    });
+
+    filteredQuickActions = QUICK_ACTIONS.filter(qa => {
+      const hay = `${qa.name} ${qa.desc} ${qa.keywords}`.toLowerCase();
+      return hay.includes(searchQuery);
+    });
+  }
+
+  // Keep selected index in bounds
+  const totalItems = filteredRecipes.length + filteredQuickActions.length;
+  if (filteredRecipes.length > 0) {
+    const activeIdx = activeRecipe ? filteredRecipes.findIndex(r => r.id === activeRecipe.id) : -1;
+    paletteSelectedIndex = activeIdx >= 0 ? activeIdx : 0;
+    selectRecipe(filteredRecipes[paletteSelectedIndex], false);
+  } else if (totalItems > 0) {
+    paletteSelectedIndex = 0;
+  } else {
+    paletteSelectedIndex = -1;
+  }
+
+  renderRecipeList(filteredRecipes);
+  renderQuickActionsList(filteredQuickActions);
+  syncPaletteHighlight();
+}
+
+if (cmdSearchInput) {
+  cmdSearchInput.addEventListener('input', (e) => {
+    filterPaletteItems(e.target.value);
+  });
+}
+
+if (cmdSearchClear) {
+  cmdSearchClear.addEventListener('click', () => {
+    if (cmdSearchInput) {
+      cmdSearchInput.value = '';
+      filterPaletteItems('');
+      cmdSearchInput.focus();
+    }
+  });
+}
+
+function syncPaletteHighlight() {
+  const recipeEls = [...recipeListEl.querySelectorAll('.recipe-item')];
+  const qaEls     = [...(quickActionsListEl ? quickActionsListEl.querySelectorAll('.quick-action-item') : [])];
+
+  recipeEls.forEach((el, idx) => {
+    const isSel = idx === paletteSelectedIndex;
+    el.classList.toggle('active', isSel);
+    if (isSel) el.scrollIntoView({ block: 'nearest' });
+  });
+
+  qaEls.forEach((el, idx) => {
+    const globalIdx = filteredRecipes.length + idx;
+    const isSel = globalIdx === paletteSelectedIndex;
+    el.classList.toggle('active', isSel);
+    if (isSel) el.scrollIntoView({ block: 'nearest' });
+  });
+}
+
+function movePaletteSelection(delta) {
+  const total = filteredRecipes.length + filteredQuickActions.length;
+  if (total === 0) return;
+
+  paletteSelectedIndex = (paletteSelectedIndex + delta + total) % total;
+  if (paletteSelectedIndex < filteredRecipes.length) {
+    const recipe = filteredRecipes[paletteSelectedIndex];
+    if (recipe) selectRecipe(recipe, false);
+  }
+  syncPaletteHighlight();
+}
+
+function triggerSelectedPaletteItem() {
+  const total = filteredRecipes.length + filteredQuickActions.length;
+  if (total === 0 || paletteSelectedIndex < 0) return;
+
+  if (paletteSelectedIndex < filteredRecipes.length) {
+    const recipe = filteredRecipes[paletteSelectedIndex];
+    if (recipe) {
+      selectRecipe(recipe, false);
+      executeActiveRecipeOrPromptInput();
+    }
+  } else {
+    const qaIdx = paletteSelectedIndex - filteredRecipes.length;
+    const qa = filteredQuickActions[qaIdx];
+    if (qa && typeof qa.run === 'function') {
+      qa.run();
+    }
+  }
+}
+
+function executeActiveRecipeOrPromptInput() {
+  if (!activeRecipe) return;
+  const text = (inputArea?.value || '').trim();
+  if (!text) {
+    // Open context drawer and focus textarea so user can type input
+    toggleContextDrawer(true, true);
+    return;
+  }
+  runBtn.click();
 }
 
 // ── Recipes ───────────────────────────────────────────────────────────────────
@@ -271,18 +615,22 @@ async function loadRecipes() {
     const json = await invoke('list_recipes');
     const recipes = JSON.parse(json);
     allRecipes = recipes;
-    renderRecipeList(recipes);
-    // Restore last-used recipe, fall back to first
+    filteredRecipes = [...recipes];
+
     const lastId = localStorage.getItem('pa_last');
     const toSelect = recipes.find(r => r.id === lastId) || recipes[0];
-    if (toSelect) selectRecipe(toSelect);
+    if (toSelect) {
+      paletteSelectedIndex = Math.max(0, recipes.findIndex(r => r.id === toSelect.id));
+      selectRecipe(toSelect, false);
+    }
+
+    filterPaletteItems(cmdSearchInput ? cmdSearchInput.value : '');
   } catch (err) {
     console.error('Failed to load recipes:', err);
   }
 }
 
-
-// ── Recipe drag-and-drop (mouse-event based — more reliable in Tauri WebView) ──
+// ── Recipe drag-and-drop (mouse-event based — reliable in Tauri WebView) ──────
 let dragState = null; // { srcId, srcEl }
 
 function onDragMove(e) {
@@ -321,12 +669,7 @@ async function onDragEnd() {
 
   const idToRecipe = Object.fromEntries(allRecipes.map(x => [x.id, x]));
   allRecipes = ids.map(id => idToRecipe[id]).filter(Boolean);
-  renderRecipeList(allRecipes);
-  if (activeRecipe) {
-    document.querySelectorAll('.recipe-item').forEach(el => {
-      el.classList.toggle('active', el.dataset.id === activeRecipe.id);
-    });
-  }
+  filterPaletteItems(cmdSearchInput ? cmdSearchInput.value : '');
 
   try {
     await invoke('reorder_recipes', { ids });
@@ -337,26 +680,77 @@ async function onDragEnd() {
 
 function renderRecipeList(recipes) {
   recipeListEl.innerHTML = '';
-  for (const r of recipes) {
+  if (recipesGroupHeader) {
+    recipesGroupHeader.style.display = recipes.length === 0 && searchQuery ? 'none' : 'flex';
+  }
+
+  if (recipes.length === 0) {
+    if (!searchQuery) {
+      recipeListEl.innerHTML = `<div class="palette-empty">No recipes yet. Press <strong>⌘N</strong> to create one.</div>`;
+    }
+    return;
+  }
+
+  recipes.forEach((r, idx) => {
     const isChain = Array.isArray(r.steps) && r.steps.length > 0;
-    const chainBadge = isChain ? `<span class="recipe-chain-badge" title="Multi-step Pipeline">🔗 ${r.steps.length} steps</span>` : '';
+    const chainBadge = isChain
+      ? `<span class="recipe-chain-badge" title="Multi-step Pipeline">🔗 ${r.steps.length} steps</span>`
+      : '';
+    const engBadge = r.engine
+      ? `<span class="recipe-engine-pill">${escapeHtml(r.engine)}</span>`
+      : '';
+
+    const subtitle = isChain
+      ? r.steps.map((s, i) => `${i + 1}. ${s.name || s.step_id}`).join(' ➔ ')
+      : (r.description || r.template || '');
+
+    const iconHtml = r.icon && r.icon.trim()
+      ? escapeHtml(r.icon.trim())
+      : sparkleIcon();
 
     const el = document.createElement('div');
-    el.className = 'recipe-item';
+    el.className = 'recipe-item' + (idx === paletteSelectedIndex ? ' active' : '');
     el.dataset.id = r.id;
     el.innerHTML = `
       <span class="recipe-drag-handle" title="Drag to reorder">⠿</span>
-      <span class="recipe-icon">${sparkleIcon()}</span>
-      <span class="recipe-name">${escapeHtml(r.name)}</span>
-      ${chainBadge}
-      <div class="recipe-actions">
-        <button class="recipe-edit-btn" title="Edit" data-id="${r.id}">${editIcon()}</button>
-        <button class="recipe-del-btn" title="Delete" data-id="${r.id}">${trashIcon()}</button>
+      <span class="recipe-icon">${iconHtml}</span>
+      <div class="recipe-main">
+        <span class="recipe-name">${escapeHtml(r.name)}</span>
+        <span class="recipe-desc">${escapeHtml(subtitle)}</span>
+      </div>
+      <div class="recipe-right">
+        ${chainBadge}
+        ${engBadge}
+        <div class="recipe-actions">
+          <button class="recipe-edit-btn" title="Edit Recipe (⌘E)" data-id="${r.id}">${editIcon()}</button>
+          <button class="recipe-del-btn" title="Delete Recipe" data-id="${r.id}">${trashIcon()}</button>
+        </div>
+        <span class="recipe-enter-hint" title="Click or press Enter to run">↵ Run</span>
       </div>
     `;
+
     el.addEventListener('click', (e) => {
-      if (!e.target.closest('.recipe-actions, .recipe-drag-handle')) selectRecipe(r);
+      if (e.target.closest('.recipe-actions, .recipe-drag-handle')) return;
+      if (e.target.closest('.recipe-enter-hint')) {
+        paletteSelectedIndex = idx;
+        selectRecipe(r, false);
+        syncPaletteHighlight();
+        executeActiveRecipeOrPromptInput();
+        return;
+      }
+      paletteSelectedIndex = idx;
+      selectRecipe(r, false);
+      syncPaletteHighlight();
     });
+
+    el.addEventListener('dblclick', (e) => {
+      if (e.target.closest('.recipe-actions, .recipe-drag-handle')) return;
+      paletteSelectedIndex = idx;
+      selectRecipe(r, false);
+      syncPaletteHighlight();
+      executeActiveRecipeOrPromptInput();
+    });
+
     el.querySelector('.recipe-edit-btn').addEventListener('click', (e) => {
       e.stopPropagation();
       openEditForm(r);
@@ -366,7 +760,7 @@ function renderRecipeList(recipes) {
       showDeleteConfirm(r);
     });
 
-    // Drag handle — mousedown starts the drag
+    // Drag handle
     el.querySelector('.recipe-drag-handle').addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
       e.preventDefault();
@@ -378,9 +772,45 @@ function renderRecipeList(recipes) {
     });
 
     recipeListEl.appendChild(el);
-  }
+  });
 }
 
+function renderQuickActionsList(actions) {
+  if (!quickActionsListEl) return;
+  quickActionsListEl.innerHTML = '';
+
+  if (quickActionsHeader) {
+    quickActionsHeader.style.display = actions.length === 0 ? 'none' : 'flex';
+  }
+
+  if (actions.length === 0 && filteredRecipes.length === 0) {
+    quickActionsListEl.innerHTML = `<div class="palette-empty">No matching recipes or commands for "${escapeHtml(searchQuery)}".</div>`;
+    return;
+  }
+
+  actions.forEach((qa, idx) => {
+    const globalIdx = filteredRecipes.length + idx;
+    const el = document.createElement('div');
+    el.className = 'quick-action-item' + (globalIdx === paletteSelectedIndex ? ' active' : '');
+    el.dataset.id = qa.id;
+    el.innerHTML = `
+      <span class="recipe-icon">${qa.icon}</span>
+      <div class="recipe-main">
+        <span class="recipe-name">${escapeHtml(qa.name)}</span>
+        <span class="recipe-desc">${escapeHtml(qa.desc)}</span>
+      </div>
+      <div class="recipe-right">
+        <kbd class="quick-action-kbd">${escapeHtml(qa.kbd)}</kbd>
+      </div>
+    `;
+    el.addEventListener('click', () => {
+      paletteSelectedIndex = globalIdx;
+      syncPaletteHighlight();
+      qa.run();
+    });
+    quickActionsListEl.appendChild(el);
+  });
+}
 
 function showDeleteConfirm(recipe) {
   pendingDeleteId = recipe.id;
@@ -396,10 +826,8 @@ function hideDeleteConfirm() {
 }
 
 async function deleteRecipe(id) {
-  console.log('[delete] deleting recipe:', id);
   try {
-    const result = await invoke('delete_recipe', { id });
-    console.log('[delete] result:', result);
+    await invoke('delete_recipe', { id });
     if (activeRecipe && activeRecipe.id === id) {
       activeRecipe = null;
       instructionText.textContent = 'Select a recipe to see instructions…';
@@ -436,7 +864,7 @@ function populateEngineDropdown(selectedValue) {
   if (engines.length === 0) {
     const opt = document.createElement('option');
     opt.value = '';
-    opt.textContent = 'No engines configured';
+    opt.textContent = 'Default (gemini)';
     select.appendChild(opt);
   } else {
     for (const eng of engines) {
@@ -450,15 +878,17 @@ function populateEngineDropdown(selectedValue) {
   }
 }
 
-function selectRecipe(recipe) {
+function selectRecipe(recipe, updateHighlight = true) {
   activeRecipe = recipe;
   localStorage.setItem('pa_last', recipe.id);
-  document.querySelectorAll('.recipe-item').forEach(el => {
-    el.classList.toggle('active', el.dataset.id === recipe.id);
-  });
-  // Update breadcrumb
-  if (breadcrumbPage) breadcrumbPage.textContent = recipe.name || '';
-  // Show template content or pipeline summary in instructions
+  if (updateHighlight) {
+    document.querySelectorAll('.recipe-item').forEach(el => {
+      el.classList.toggle('active', el.dataset.id === recipe.id);
+    });
+  }
+  if (breadcrumbPage && currentView !== 'input') {
+    breadcrumbPage.textContent = recipe.name || '';
+  }
   if (Array.isArray(recipe.steps) && recipe.steps.length > 0) {
     const stepsSummary = recipe.steps.map((s, i) => `${i + 1}. ${escapeHtml(s.name || s.step_id)}`).join(' ➔ ');
     instructionText.innerHTML = `<strong>🔗 Pipeline (${recipe.steps.length} steps):</strong> ${stepsSummary}`;
@@ -469,41 +899,34 @@ function selectRecipe(recipe) {
   instructionText.classList.remove('ph');
   renderParams(recipe.params || []);
   updateRunState();
+  updateFooterBar();
 }
 
-
-// ── Params ────────────────────────────────────────────────────────────────────
+// ── Inline Segmented Params Bar ───────────────────────────────────────────────
 function renderParams(params) {
   paramsSection.innerHTML = '';
   for (const pKey of params) {
     const cfg = PARAM_CONFIG[pKey];
     if (!cfg) continue;
     const row = document.createElement('div');
-    row.className = 'param-row';
+    row.className = 'param-row open';
     row.dataset.param = pKey;
     row.innerHTML = `
       <div class="param-row-header">
-        <span class="param-row-label">${cfg.label}</span>
-        <div class="param-row-right">
-          <span class="param-emoji">${cfg.emoji}</span>
-          <span class="param-value">${capitalize(paramValues[pKey] || 'Select')}</span>
-          <span class="param-caret">⌃</span>
-        </div>
+        <span class="param-row-label">${cfg.label}:</span>
       </div>
       <div class="param-options">
         ${cfg.options.map(o =>
-          `<button class="param-opt${paramValues[pKey] === o ? ' active' : ''}" data-param="${pKey}" data-value="${o}">${capitalize(o)}</button>`
+          `<button type="button" class="param-opt${paramValues[pKey] === o ? ' active' : ''}" data-param="${pKey}" data-value="${o}">${capitalize(o)}</button>`
         ).join('')}
       </div>
     `;
-    row.querySelector('.param-row-header').addEventListener('click', () => row.classList.toggle('open'));
     row.querySelectorAll('.param-opt').forEach(opt => {
       opt.addEventListener('click', () => {
         const p = opt.dataset.param;
         const v = opt.dataset.value;
         paramValues[p] = v;
         row.querySelectorAll('.param-opt').forEach(o => o.classList.toggle('active', o.dataset.value === v));
-        row.querySelector('.param-value').textContent = capitalize(v);
       });
     });
     paramsSection.appendChild(row);
@@ -511,10 +934,12 @@ function renderParams(params) {
 }
 
 function updateRunState() {
-  runBtn.disabled = !activeRecipe || !inputArea.value.trim();
+  const hasText = !!(inputArea && inputArea.value.trim());
+  runBtn.disabled = !activeRecipe || !hasText;
+  updateContextUI();
 }
 
-// ── Conversation state (declared early — used in Tauri event listeners below) ──
+// ── Conversation state ────────────────────────────────────────────────────────
 let conversationHistory = [];
 let conversationEngine  = '';
 let conversationSessionId = '';
@@ -535,7 +960,6 @@ let pipelineStepOutputs = {};
 let activePipelineStepId = '';
 
 function getStepTarget(stepId, stepIndex) {
-  // 1. Match by data-step-id or element ID
   if (stepId) {
     const box = document.getElementById(`step-box-${stepId}`) ||
                 document.querySelector(`[data-step-id="${stepId}"]`);
@@ -551,7 +975,6 @@ function getStepTarget(stepId, stepIndex) {
     }
   }
 
-  // 2. Match by stepIndex (0, 1, 2, ...)
   if (typeof stepIndex === 'number' && !isNaN(stepIndex)) {
     const box = document.querySelector(`[data-step-index="${stepIndex}"]`);
     if (box) {
@@ -566,7 +989,6 @@ function getStepTarget(stepId, stepIndex) {
     }
   }
 
-  // 3. Fallback: match first active or pending step box
   const currentBox = document.querySelector('.step-output-box.active') ||
                      document.querySelector('.step-output-box.pending') ||
                      document.querySelector('.step-output-box');
@@ -581,7 +1003,6 @@ function getStepTarget(stepId, stepIndex) {
     }
   }
 
-  // 4. Fallback for single recipe or missing container
   let bodyEl = document.getElementById('output-body');
   if (!bodyEl) {
     bodyEl = document.createElement('div');
@@ -596,7 +1017,6 @@ function getStepTarget(stepId, stepIndex) {
 // ── Tauri events ──────────────────────────────────────────────────────────────
 await listen('selection', ({ payload }) => {
   currentSelection = payload || '';
-  // Only switch to input view if not currently viewing an active output stream
   const isRunning = runBtn.classList.contains('loading');
   if (!isRunning && !viewOutput.classList.contains('visible')) {
     showView('input');
@@ -622,7 +1042,6 @@ await listen('status', ({ payload }) => {
       if (st) st.innerHTML = '<span class="status-dot-pulse"></span> Running...';
     }
 
-    // Update Stepper
     if (typeof stepIndex === 'number') {
       document.querySelectorAll('.stepper-step').forEach(el => {
         if (el.dataset.stepIndex === String(stepIndex)) {
@@ -659,7 +1078,6 @@ await listen('chunk', ({ payload }) => {
 
     if (!chunkText) return;
 
-    // Remove generic thinking banner if present
     const thinking = outputEl.querySelector('.output-thinking');
     if (thinking) thinking.remove();
 
@@ -671,7 +1089,6 @@ await listen('chunk', ({ payload }) => {
       const target = getStepTarget(stepId, stepIndex);
       const effectiveStepId = target.stepId || (typeof stepIndex === 'number' ? `step_${stepIndex + 1}` : 'step_1');
 
-      // Accumulate text for this step under all possible keys
       const current = (pipelineStepOutputs[effectiveStepId] || '') + chunkText;
       pipelineStepOutputs[effectiveStepId] = current;
       if (target.stepId) pipelineStepOutputs[target.stepId] = current;
@@ -697,7 +1114,6 @@ await listen('chunk', ({ payload }) => {
           st.innerHTML = '<span class="status-dot-pulse"></span> Running...';
         }
 
-        // Mark preceding steps as completed
         if (target.box.dataset.stepIndex !== undefined) {
           const curIdx = parseInt(target.box.dataset.stepIndex, 10);
           const allBoxes = [...document.querySelectorAll('.step-output-box')];
@@ -730,7 +1146,6 @@ await listen('chunk', ({ payload }) => {
         }
       }
     } else {
-      // Single recipe standard render
       let bodyEl = document.getElementById('output-body');
       if (!bodyEl) {
         bodyEl = document.createElement('div');
@@ -770,7 +1185,6 @@ await listen('done', () => {
 
     const isChain = document.getElementById('pipeline-steps-container') !== null;
 
-    // Mark all step cards as completed & enable step copy buttons
     document.querySelectorAll('.step-output-box').forEach((box, idx) => {
       box.classList.remove('active', 'pending');
       box.classList.add('completed');
@@ -805,7 +1219,6 @@ await listen('done', () => {
       stepEl.classList.add('completed');
     });
 
-    // Re-synchronize normalized multi-step text for copy & history
     if (isChain && activeRecipe && Array.isArray(activeRecipe.steps)) {
       const combined = activeRecipe.steps.map((s, idx) => {
         const sOut = (pipelineStepOutputs[s.step_id] || pipelineStepOutputs[`step_${idx + 1}`] || pipelineStepOutputs[idx] || '').trim();
@@ -829,11 +1242,9 @@ await listen('done', () => {
     const trimmed = aiResponseText.trim();
     if (trimmed) {
       copyWrapEl.style.display = '';
-      // Word count meta
       const wordCount = trimmed.split(/\s+/).filter(Boolean).length;
       const metaEl = document.getElementById('output-meta');
       if (metaEl) metaEl.textContent = `${wordCount} words`;
-      // Done badge for single recipe
       if (!isChain) {
         const bodyEl = document.getElementById('output-body');
         if (bodyEl && !bodyEl.querySelector('.output-done-badge')) {
@@ -843,7 +1254,6 @@ await listen('done', () => {
           bodyEl.appendChild(badge);
         }
       }
-      // Save AI response to conversation history and show follow-up input
       if (conversationEngine) {
         if (conversationHistory.length === 0) {
           conversationHistory.push({ role: 'user', content: currentSelection || inputArea.value.trim() });
@@ -861,7 +1271,7 @@ await listen('done', () => {
 // ── Run / Output ──────────────────────────────────────────────────────────────
 
 let currentSelection = '';
-let aiResponseText = '';   // pure AI text — used for copy
+let aiResponseText = '';
 
 inputArea.addEventListener('input', updateRunState);
 
@@ -874,51 +1284,17 @@ function setRunLoading(loading) {
   loadIcon.style.display = loading ? 'flex' : 'none';
 }
 
-// Append a streaming turn into the output element.
-// Returns a reference to the new body div for chunk appending.
-function appendTurnStart(engine) {
-  const bodyEl = document.getElementById('output-body');
-  if (bodyEl) {
-    const hr = document.createElement('hr');
-    hr.className = 'chat-divider';
-    bodyEl.appendChild(hr);
-  }
-  const thinking = document.createElement('div');
-  thinking.className = 'output-thinking';
-  thinking.innerHTML = `<span class="output-engine-dot"></span>Thinking with <strong>${engine}</strong>…`;
-  outputEl.appendChild(thinking);
-  const newBody = document.createElement('div');
-  newBody.className = 'output-body';
-  newBody.id = 'output-body';
-  outputEl.appendChild(newBody);
-  return { thinking, newBody };
-}
-
 runBtn.addEventListener('click', async () => {
   const text = inputArea.value.trim();
-  if (!activeRecipe) {
-    console.warn('[runBtn] No active recipe selected');
-    return;
-  }
+  if (!activeRecipe) return;
   if (!text) {
-    console.warn('[runBtn] Input text is empty');
-    inputArea.focus();
+    toggleContextDrawer(true, true);
     return;
   }
 
   const isChain = Array.isArray(activeRecipe.steps) && activeRecipe.steps.length > 0;
   const engine = activeRecipe.engine || Object.keys(engineConfigs)[0] || 'gemini';
 
-  console.log('[runBtn] Executing recipe:', {
-    recipeId: activeRecipe.id,
-    recipeName: activeRecipe.name,
-    isChain,
-    stepsCount: isChain ? activeRecipe.steps.length : 0,
-    engine,
-    inputLength: text.length,
-  });
-
-  // Reset conversation for a new recipe run
   conversationHistory   = [];
   conversationEngine    = engine;
   conversationSessionId = crypto.randomUUID();
@@ -972,7 +1348,6 @@ runBtn.addEventListener('click', async () => {
     outputEl.innerHTML = `<div class="output-thinking"><span class="output-engine-dot"></span>Thinking with <strong>${escapeHtml(engine)}</strong>…</div><div class="output-body" id="output-body"></div>`;
   }
 
-
   try {
     const recipeParams = activeRecipe.params || [];
     await invoke('run_recipe', {
@@ -997,15 +1372,11 @@ runBtn.addEventListener('click', async () => {
   }
 });
 
-
-
-
 // Send follow-up message
 async function sendFollowup() {
   const text = followupInput.value.trim();
   if (!text || conversationEngine === '') return;
 
-  // Append user turn to history and display it
   conversationHistory.push({ role: 'user', content: text });
   followupInput.value = '';
 
@@ -1024,10 +1395,9 @@ async function sendFollowup() {
   setFollowupLoading(true);
   aiResponseText = '';
 
-  // Append thinking indicator + new body
   const thinking = document.createElement('div');
   thinking.className = 'output-thinking';
-  thinking.innerHTML = `<span class="output-engine-dot"></span>Thinking with <strong>${conversationEngine}</strong>…`;
+  thinking.innerHTML = `<span class="output-engine-dot"></span>Thinking with <strong>${escapeHtml(conversationEngine)}</strong>…`;
   outputEl.appendChild(thinking);
   const newBody = document.createElement('div');
   newBody.className = 'output-body';
@@ -1039,7 +1409,7 @@ async function sendFollowup() {
 
   try {
     await invoke('send_chat', {
-      messages:   JSON.stringify(conversationHistory),
+      messages:   conversationHistory,
       engine:     conversationEngine,
       sessionId:  conversationSessionId,
       turnIndex:  conversationTurnIndex,
@@ -1063,7 +1433,6 @@ followupInput.addEventListener('keydown', e => {
     sendFollowup();
   }
 });
-// Auto-resize textarea
 followupInput.addEventListener('input', () => {
   followupInput.style.height = 'auto';
   followupInput.style.height = Math.min(followupInput.scrollHeight, 80) + 'px';
@@ -1182,7 +1551,6 @@ function renderStepCards() {
   if (!stepsContainer) return;
   stepsContainer.innerHTML = '';
 
-  // Gather available variable keys
   const availableVars = ['selection'];
   currentSteps.forEach(s => {
     if (s.output_key && s.output_key !== 'result' && !availableVars.includes(s.output_key)) {
@@ -1199,7 +1567,6 @@ function renderStepCards() {
       .map(v => `<button type="button" class="step-var-chip" data-var="${v}">+ {{${v}}}</button>`)
       .join('');
 
-    // Determine current provider for model datalist suggestions
     let effectiveProvider = 'gemini';
     if (step.provider) {
       if (engineConfigs[step.provider]) {
@@ -1210,7 +1577,6 @@ function renderStepCards() {
     }
     const modelSuggestions = ENGINE_MODELS[effectiveProvider] || [];
 
-    // Engine select options
     const configuredOptions = Object.keys(engineConfigs).map(id => {
       const cfg = engineConfigs[id] || {};
       const isSel = step.provider === id;
@@ -1280,7 +1646,6 @@ function renderStepCards() {
     providerSelect.addEventListener('change', (e) => {
       const selected = e.target.value || null;
       currentSteps[idx].provider = selected;
-      // Update model suggestions datalist
       let p = 'gemini';
       if (selected) {
         if (engineConfigs[selected]) p = engineConfigs[selected].provider || 'gemini';
@@ -1314,7 +1679,6 @@ function renderStepCards() {
   });
 }
 
-
 if (addStepBtn) {
   addStepBtn.addEventListener('click', () => addStep());
 }
@@ -1336,6 +1700,7 @@ function openCreateForm() {
   formSaveBtn.disabled = false;
   formSaveBtn.textContent = 'Save Recipe';
   showView('form');
+  setTimeout(() => document.getElementById('f-name')?.focus(), 20);
 }
 
 function openEditForm(recipe) {
@@ -1387,7 +1752,7 @@ formSaveBtn.addEventListener('click', async () => {
       }
     }
     stepsJson = JSON.stringify(currentSteps);
-    template = currentSteps[0].template; // fallback template
+    template = currentSteps[0].template;
   } else {
     template = document.getElementById('f-template').value.trim();
     if (!template) { formError.textContent = 'Template is required'; return; }
@@ -1407,7 +1772,7 @@ formSaveBtn.addEventListener('click', async () => {
     if (editingRecipe) {
       await invoke('update_recipe', {
         id: editingRecipe.id, name, description, template, engine,
-        params: checkedParams, icon: '', steps: stepsJson,
+        params: checkedParams, icon: editingRecipe.icon || '', steps: stepsJson,
       });
     } else {
       const id = slugify(name) || `recipe_${Date.now()}`;
@@ -1426,53 +1791,164 @@ formSaveBtn.addEventListener('click', async () => {
   }
 });
 
-
 // ── Window drag ───────────────────────────────────────────────────────────────
-// data-tauri-drag-region is set on #header but can be unreliable with
-// transparent + decoration-less windows on macOS. Manually call startDragging().
 function makeDraggable(el) {
+  if (!el) return;
   el.addEventListener('mousedown', (e) => {
-    if (e.target.closest('button, input, textarea, select, a')) return;
-    if (e.button !== 0) return; // left click only
+    if (e.target.closest('button, input, textarea, select, a, kbd')) return;
+    if (e.button !== 0) return;
     try {
       _tauri?.window?.getCurrentWindow?.()?.startDragging?.();
     } catch (_) {}
   });
 }
 makeDraggable(document.getElementById('header'));
-makeDraggable(document.querySelector('.sidebar-header'));
 
-// ── Close / Keyboard ──────────────────────────────────────────────────────────
+// ── Close & Global Keyboard-First Navigation (look / Raycast UX) ─────────────
 closeBtn.addEventListener('click', () => {
   invoke('hide_window').catch(() => window.close());
 });
 
+let isRecording = false; // hotkey recording state declared before keydown listener
+
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') invoke('hide_window').catch(() => window.close());
-  if (e.key === 'Enter' && !e.shiftKey && !runBtn.disabled && viewInput.style.display !== 'none') {
+  // Let hotkey recorder handle its own key events when active
+  if (isRecording) return;
+
+  const isMeta = e.metaKey || e.ctrlKey;
+  const deleteModal = document.getElementById('delete-modal');
+  const isModalOpen = deleteModal && deleteModal.classList.contains('visible');
+
+  // 1. Hierarchical Escape handling
+  if (e.key === 'Escape') {
     e.preventDefault();
-    runBtn.click();
+    if (isModalOpen) {
+      hideDeleteConfirm();
+      return;
+    }
+    if (currentView !== 'input') {
+      showView('input');
+      return;
+    }
+    if (isContextDrawerOpen) {
+      toggleContextDrawer(false, false);
+      return;
+    }
+    if (cmdSearchInput && cmdSearchInput.value.trim() !== '') {
+      cmdSearchInput.value = '';
+      filterPaletteItems('');
+      cmdSearchInput.focus();
+      return;
+    }
+    invoke('hide_window').catch(() => window.close());
+    return;
+  }
+
+  // 2. Global shortcuts (⌘N, ⌘Y, ⌘,, ⌘K, ⌘D, ⌘E)
+  if (isMeta && e.key.toLowerCase() === 'n') {
+    e.preventDefault();
+    openCreateForm();
+    return;
+  }
+  if (isMeta && e.key.toLowerCase() === 'y') {
+    e.preventDefault();
+    showView('history');
+    loadHistory();
+    return;
+  }
+  if (isMeta && e.key === ',') {
+    e.preventDefault();
+    openSettingsView();
+    return;
+  }
+  if (isMeta && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    if (currentView !== 'input') showView('input');
+    cmdSearchInput?.focus();
+    cmdSearchInput?.select();
+    return;
+  }
+  if (isMeta && e.key.toLowerCase() === 'd') {
+    e.preventDefault();
+    applyDark(document.documentElement.dataset.dark !== 'true');
+    return;
+  }
+  if (isMeta && e.key.toLowerCase() === 't') {
+    e.preventDefault();
+    openSettingsView().then(() => switchSettingsTab('appearance'));
+    return;
+  }
+  if (isMeta && e.key.toLowerCase() === 'e' && currentView === 'input' && activeRecipe) {
+    e.preventDefault();
+    openEditForm(activeRecipe);
+    return;
+  }
+
+  // 3. Launcher ('input') view Keyboard-First Navigation
+  if (currentView === 'input' && !isModalOpen) {
+    const inTextarea = document.activeElement === inputArea;
+
+    // Tab toggles Context Drawer
+    if (e.key === 'Tab' && !e.shiftKey && !isMeta) {
+      e.preventDefault();
+      if (!isContextDrawerOpen) {
+        toggleContextDrawer(true, true);
+      } else if (inTextarea) {
+        toggleContextDrawer(false, false);
+      } else {
+        inputArea?.focus();
+      }
+      return;
+    }
+
+    // Arrow Down / Up navigates recipes & quick actions (unless moving cursor inside multi-line textarea)
+    if (e.key === 'ArrowDown' && (!inTextarea || e.altKey)) {
+      e.preventDefault();
+      movePaletteSelection(1);
+      return;
+    }
+    if (e.key === 'ArrowUp' && (!inTextarea || e.altKey)) {
+      e.preventDefault();
+      movePaletteSelection(-1);
+      return;
+    }
+
+    // Enter executes the highlighted command or recipe
+    if (e.key === 'Enter') {
+      if (inTextarea) {
+        // Inside textarea: Cmd+Enter or Enter (without Shift) runs the recipe
+        if (isMeta || !e.shiftKey) {
+          e.preventDefault();
+          if (!runBtn.disabled) runBtn.click();
+        }
+        return;
+      }
+      if (!e.shiftKey) {
+        e.preventDefault();
+        triggerSelectedPaletteItem();
+        return;
+      }
+    }
   }
 });
 
 // ── Settings ──────────────────────────────────────────────────────────────────
-const engineListEl    = document.getElementById('engine-list');
-const addEngineBtn    = document.getElementById('add-engine-btn');
-const engineForm      = document.getElementById('engine-form');
-const engineFormTitle = document.getElementById('engine-form-title');
+const engineListEl     = document.getElementById('engine-list');
+const addEngineBtn     = document.getElementById('add-engine-btn');
+const engineForm       = document.getElementById('engine-form');
+const engineFormTitle  = document.getElementById('engine-form-title');
 const engineFormCancel = document.getElementById('engine-form-cancel');
-const engineFormSave  = document.getElementById('engine-form-save');
-const engineFormErr   = document.getElementById('engine-form-err');
-const efId       = document.getElementById('ef-id');       // text input: unique slug
-const efProvider = document.getElementById('ef-provider'); // select: gemini/openai/claude
-const efName  = document.getElementById('ef-name');
-const efKey   = document.getElementById('ef-key');
-const efModel = document.getElementById('ef-model');
+const engineFormSave   = document.getElementById('engine-form-save');
+const engineFormErr    = document.getElementById('engine-form-err');
+const efId       = document.getElementById('ef-id');
+const efProvider = document.getElementById('ef-provider');
+const efName     = document.getElementById('ef-name');
+const efKey      = document.getElementById('ef-key');
+const efModel    = document.getElementById('ef-model');
 
-let editingEngine = null; // null = new, string = engine id being edited
+let editingEngine = null;
 
 function updateModelDatalist(engineId) {
-
   const dl = document.getElementById('engine-model-list');
   dl.innerHTML = '';
   const models = ENGINE_MODELS[engineId] || [];
@@ -1486,7 +1962,6 @@ function updateModelDatalist(engineId) {
 async function loadEngineConfigs() {
   try {
     const raw = await invoke('get_engine_configs');
-    // Backend returns Array [{id, provider, name, api_key, model}, ...]
     const arr = JSON.parse(raw);
     engineConfigs = {};
     if (Array.isArray(arr)) {
@@ -1503,6 +1978,7 @@ async function loadEngineConfigs() {
     engineConfigs = {};
   }
   renderEngineList();
+  updateFooterBar();
 }
 
 function renderEngineList() {
@@ -1517,24 +1993,24 @@ function renderEngineList() {
     const key = cfg.api_key || '';
     const model = cfg.model || '';
     const displayName = cfg.name || eng;
-    const hasKey = key !== '';
+    const hasKey = key !== '' || cfg.provider === 'ollama';
     const card = document.createElement('div');
     card.className = 'engine-card';
     card.innerHTML = `
       <div class="engine-header">
         <span class="engine-dot"></span>
-        <span class="engine-name">${displayName}</span>
-        <span class="engine-id-badge">${eng}</span>
-        ${cfg.provider ? `<span class="engine-provider-badge">${cfg.provider}</span>` : ''}
+        <span class="engine-name">${escapeHtml(displayName)}</span>
+        <span class="engine-id-badge">${escapeHtml(eng)}</span>
+        ${cfg.provider ? `<span class="engine-provider-badge">${escapeHtml(cfg.provider)}</span>` : ''}
         <span class="engine-status ${hasKey ? 'configured' : 'empty'}">${hasKey ? 'Configured' : 'Not set'}</span>
         <div class="engine-card-actions">
-          <button class="engine-edit-btn" data-engine="${eng}" title="Edit">Edit</button>
-          <button class="engine-del-btn" data-engine="${eng}" title="Delete">✕</button>
+          <button class="engine-edit-btn" data-engine="${escapeHtml(eng)}" title="Edit">Edit</button>
+          <button class="engine-del-btn" data-engine="${escapeHtml(eng)}" title="Delete">✕</button>
         </div>
       </div>
       <div class="engine-info">
-        <span class="engine-info-row"><span class="engine-info-label">Key:</span> ${key.startsWith('env:') ? `<code>${key}</code>` : (hasKey ? '••••••••' : '—')}</span>
-        <span class="engine-info-row"><span class="engine-info-label">Model:</span> ${model || '—'}</span>
+        <span class="engine-info-row"><span class="engine-info-label">Key:</span> ${key.startsWith('env:') ? `<code>${escapeHtml(key)}</code>` : (key ? '••••••••' : (cfg.provider === 'ollama' ? 'Local' : '—'))}</span>
+        <span class="engine-info-row"><span class="engine-info-label">Model:</span> ${escapeHtml(model || '—')}</span>
       </div>
     `;
     card.querySelector('.engine-edit-btn').addEventListener('click', () => openEngineForm(eng));
@@ -1543,7 +2019,12 @@ function renderEngineList() {
   }
 }
 
-const ENGINE_KEY_PLACEHOLDERS = { gemini: 'AIza...', claude: 'sk-ant-...', openai: 'sk-...' };
+const ENGINE_KEY_PLACEHOLDERS = {
+  gemini: 'AIza... or env:GEMINI_API_KEY',
+  claude: 'sk-ant-... or env:ANTHROPIC_API_KEY',
+  openai: 'sk-... or env:OPENAI_API_KEY',
+  ollama: 'Optional for local Ollama',
+};
 
 function applyEngineFormDefaults(provider) {
   updateModelDatalist(provider);
@@ -1554,22 +2035,19 @@ function openEngineForm(engId = null) {
   editingEngine = engId;
   engineFormTitle.textContent = engId ? `Edit — ${engId}` : 'New Engine';
 
-  // ID field: editable only when creating new
   efId.value    = engId || '';
   efId.disabled = !!engId;
 
-  // Load existing config if editing
   const cfg = engId ? (engineConfigs[engId] || {}) : {};
   const key = cfg.api_key || '';
   const provider = cfg.provider || 'gemini';
 
   efProvider.value = provider;
-  efProvider.disabled = !!engId; // lock provider when editing (changing would break the entry)
+  efProvider.disabled = !!engId;
   efName.value  = cfg.name  || '';
   efKey.value   = key.startsWith('env:') ? '' : key;
   efModel.value = cfg.model || '';
 
-  // Update model datalist + key placeholder for selected provider
   applyEngineFormDefaults(provider);
   if (key.startsWith('env:')) efKey.placeholder = key;
 
@@ -1610,8 +2088,6 @@ async function doDeleteEngine(eng) {
 
 addEngineBtn.addEventListener('click', () => openEngineForm(null));
 engineFormCancel.addEventListener('click', closeEngineForm);
-
-// Update model suggestions and key placeholder when provider changes
 efProvider.addEventListener('change', () => applyEngineFormDefaults(efProvider.value));
 
 engineFormSave.addEventListener('click', async () => {
@@ -1628,7 +2104,6 @@ engineFormSave.addEventListener('click', async () => {
     return;
   }
 
-  // Check duplicate ID when creating new
   if (!editingEngine && engineConfigs[id]) {
     engineFormErr.textContent = `ID "${id}" already exists. Choose a different ID.`;
     return;
@@ -1640,7 +2115,6 @@ engineFormSave.addEventListener('click', async () => {
   settingsMsg.textContent = '';
 
   try {
-    // Always pass all fields — backend handles empty strings as "clear field"
     await invoke('save_engine_config', { engine: id, provider, apiKey: key, model, name });
     await loadEngineConfigs();
     closeEngineForm();
@@ -1656,12 +2130,10 @@ engineFormSave.addEventListener('click', async () => {
 });
 
 // ── Hotkey recorder ───────────────────────────────────────────────────────────
-const hotkeyDisplayText  = document.getElementById('hotkey-display-text');
-const hotkeyRecordBtn    = document.getElementById('hotkey-record-btn');
+const hotkeyDisplayText   = document.getElementById('hotkey-display-text');
+const hotkeyRecordBtn     = document.getElementById('hotkey-record-btn');
 const hotkeyRecordingHint = document.getElementById('hotkey-recording-hint');
-const hotkeyMsg          = document.getElementById('hotkey-msg');
-
-let isRecording = false;
+const hotkeyMsg           = document.getElementById('hotkey-msg');
 
 async function loadHotkey() {
   try {
@@ -1690,7 +2162,7 @@ function stopRecording() {
 hotkeyRecordBtn.addEventListener('click', () => {
   if (isRecording) {
     stopRecording();
-    loadHotkey(); // restore previous
+    loadHotkey();
   } else {
     startRecording();
   }
@@ -1706,7 +2178,6 @@ document.addEventListener('keydown', async (e) => {
     return;
   }
 
-  // Need at least one modifier
   const mods = [];
   if (e.ctrlKey)  mods.push('Ctrl');
   if (e.altKey)   mods.push('Alt');
@@ -1714,12 +2185,11 @@ document.addEventListener('keydown', async (e) => {
   if (e.metaKey)  mods.push('Super');
 
   const modKeys = new Set(['Control','Alt','Shift','Meta']);
-  if (modKeys.has(e.key)) return; // still waiting for the main key
+  if (modKeys.has(e.key)) return;
+  if (mods.length === 0) return;
 
-  if (mods.length === 0) return; // require at least one modifier
-
-  const key = e.code.startsWith('Key')   ? e.code.slice(3)      // KeyA → A
-            : e.code.startsWith('Digit') ? e.code.slice(5)      // Digit1 → 1
+  const key = e.code.startsWith('Key')   ? e.code.slice(3)
+            : e.code.startsWith('Digit') ? e.code.slice(5)
             : e.code === 'Space'         ? 'Space'
             : e.key;
 
@@ -1740,33 +2210,211 @@ document.addEventListener('keydown', async (e) => {
   }
 });
 
-// ── Appearance / Theme ────────────────────────────────────────────────────────
+// ── Appearance: Ghostty Theme, Opacity & Custom Wallpaper ─────────────────────
+const VALID_THEMES = ['ghostty-default', 'catppuccin', 'tokyo-night', 'rose-pine', 'dracula', 'nord'];
+const bgLayerEl        = document.getElementById('app-bg-layer');
+const opacitySlider    = document.getElementById('opacity-slider');
+const opacityValLabel  = document.getElementById('opacity-val-label');
+const bgBlurSlider     = document.getElementById('bg-blur-slider');
+const bgBlurValLabel   = document.getElementById('bg-blur-val-label');
+const bgFileInput      = document.getElementById('bg-file-input');
+const bgUploadBtn      = document.getElementById('bg-upload-btn');
+const bgUrlInput       = document.getElementById('bg-url-input');
+const bgUrlApplyBtn    = document.getElementById('bg-url-apply-btn');
+const bgClearBtn       = document.getElementById('bg-clear-btn');
+
 function applyTheme(name) {
-  document.documentElement.dataset.theme = name;
+  const validName = VALID_THEMES.includes(name) ? name : 'ghostty-default';
+  document.documentElement.dataset.theme = validName;
   document.querySelectorAll('.theme-swatch').forEach(s => {
-    s.classList.toggle('active', s.dataset.theme === name);
+    s.classList.toggle('active', s.dataset.theme === validName);
   });
-  localStorage.setItem('theme', name);
+  localStorage.setItem('ghostty_theme', validName);
 }
 
 function applyDark(dark) {
   document.documentElement.dataset.dark = dark ? 'true' : 'false';
   const btn = document.getElementById('dark-toggle');
   if (btn) btn.setAttribute('aria-pressed', dark ? 'true' : 'false');
-  localStorage.setItem('dark', dark ? 'true' : 'false');
+  localStorage.setItem('ghostty_dark', dark ? 'true' : 'false');
+}
+
+function applyOpacity(val) {
+  let num = parseFloat(val);
+  if (isNaN(num)) num = 0.88;
+  // Accept either percentage (0..100) or float (0..1.0)
+  if (num > 1) num = num / 100;
+  num = Math.min(1, Math.max(0, num));
+
+  const pct = Math.round(num * 100);
+  document.documentElement.style.setProperty('--app-opacity', num.toFixed(2));
+  // Scale backdrop blur with opacity so at 0% there's no frosted glass
+  const blurPx = Math.round(28 * num);
+  const sat = Math.round(100 + 90 * num);
+  document.body.style.backdropFilter = `blur(${blurPx}px) saturate(${sat}%)`;
+  document.body.style.webkitBackdropFilter = `blur(${blurPx}px) saturate(${sat}%)`;
+  // Toggle native macOS vibrancy: disable below 15% for true transparency
+  invoke('set_vibrancy', { enabled: num >= 0.15 }).catch(() => {});
+  if (opacitySlider) opacitySlider.value = String(pct);
+  if (opacityValLabel) opacityValLabel.textContent = `${pct}%`;
+  localStorage.setItem('ghostty_opacity', num.toFixed(2));
+}
+
+function applyBgBlur(px) {
+  let num = parseInt(px, 10);
+  if (isNaN(num)) num = 8;
+  num = Math.min(32, Math.max(0, num));
+
+  document.documentElement.style.setProperty('--bg-image-blur', `${num}px`);
+  if (bgBlurSlider) bgBlurSlider.value = String(num);
+  if (bgBlurValLabel) bgBlurValLabel.textContent = `${num}px`;
+  localStorage.setItem('pa_bg_blur', String(num));
+}
+
+function applyBackground(source) {
+  const src = (source || 'none').trim();
+  if (!bgLayerEl) return;
+
+  // Reset state
+  bgLayerEl.style.backgroundImage = '';
+  delete bgLayerEl.dataset.preset;
+  bgLayerEl.classList.remove('has-bg');
+
+  let activePreset = 'none';
+
+  if (!src || src === 'none') {
+    localStorage.removeItem('pa_bg_source');
+    if (bgUrlInput) bgUrlInput.value = '';
+    if (bgClearBtn) bgClearBtn.classList.add('hidden');
+  } else if (src.startsWith('preset:')) {
+    activePreset = src.slice('preset:'.length);
+    bgLayerEl.dataset.preset = activePreset;
+    localStorage.setItem('pa_bg_source', src);
+    if (bgUrlInput) bgUrlInput.value = '';
+    if (bgClearBtn) bgClearBtn.classList.remove('hidden');
+  } else {
+    // Custom URL or Data URL
+    activePreset = '';
+    const safeUrl = src.replace(/"/g, '\\"');
+    bgLayerEl.style.backgroundImage = `url("${safeUrl}")`;
+    bgLayerEl.classList.add('has-bg');
+    try {
+      localStorage.setItem('pa_bg_source', src);
+    } catch (e) {
+      console.warn('Wallpaper too large for localStorage:', e);
+    }
+    if (bgUrlInput && !src.startsWith('data:')) {
+      bgUrlInput.value = src;
+    }
+    if (bgClearBtn) bgClearBtn.classList.remove('hidden');
+  }
+
+  document.querySelectorAll('.bg-preset-chip').forEach(chip => {
+    chip.classList.toggle('active', chip.dataset.bgPreset === activePreset);
+  });
+
+  // If user activates a wallpaper while opacity is very high (>= 0.90), gently lower to 0.78 so wallpaper is visible
+  if (src && src !== 'none') {
+    const curOp = parseFloat(localStorage.getItem('pa_opacity') || '0.92');
+    if (curOp >= 0.90) {
+      applyOpacity(0.78);
+    }
+  }
+}
+
+function compressImageFileToDataUrl(file, maxWidth = 1280, quality = 0.82) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = img.width > maxWidth ? maxWidth / img.width : 1;
+        const w = Math.round(img.width * scale);
+        const h = Math.round(img.height * scale);
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = reject;
+      img.src = ev.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
 }
 
 document.querySelectorAll('.theme-swatch').forEach(btn => {
   btn.addEventListener('click', () => applyTheme(btn.dataset.theme));
 });
 
-document.getElementById('dark-toggle').addEventListener('click', () => {
-  applyDark(document.documentElement.dataset.dark !== 'true');
+// Dark toggle removed — always dark mode
+const darkToggleEl = document.getElementById('dark-toggle');
+if (darkToggleEl) {
+  darkToggleEl.addEventListener('click', () => {
+    applyDark(document.documentElement.dataset.dark !== 'true');
+  });
+}
+
+if (opacitySlider) {
+  opacitySlider.addEventListener('input', (e) => applyOpacity(e.target.value));
+}
+if (bgBlurSlider) {
+  bgBlurSlider.addEventListener('input', (e) => applyBgBlur(e.target.value));
+}
+
+if (bgUploadBtn && bgFileInput) {
+  bgUploadBtn.addEventListener('click', () => bgFileInput.click());
+  bgFileInput.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const dataUrl = await compressImageFileToDataUrl(file);
+      applyBackground(dataUrl);
+    } catch (err) {
+      console.error('Failed to load background image:', err);
+    }
+    bgFileInput.value = '';
+  });
+}
+
+if (bgUrlApplyBtn && bgUrlInput) {
+  const applyUrlFn = () => {
+    const url = bgUrlInput.value.trim();
+    if (url) applyBackground(url);
+  };
+  bgUrlApplyBtn.addEventListener('click', applyUrlFn);
+  bgUrlInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      applyUrlFn();
+    }
+  });
+}
+
+if (bgClearBtn) {
+  bgClearBtn.addEventListener('click', () => applyBackground('none'));
+}
+
+document.querySelectorAll('.bg-preset-chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    const preset = chip.dataset.bgPreset;
+    if (!preset || preset === 'none') {
+      applyBackground('none');
+    } else {
+      applyBackground(`preset:${preset}`);
+    }
+  });
 });
 
-// Sync toggle state with what the inline script already applied at load time
-applyDark(localStorage.getItem('dark') === 'true');
-applyTheme(localStorage.getItem('theme') || 'claude');
+// Initialize Appearance from localStorage — always dark
+applyDark(true);
+applyTheme(localStorage.getItem('ghostty_theme') || 'ghostty-default');
+applyOpacity(localStorage.getItem('ghostty_opacity') || '0.88');
+applyBgBlur(localStorage.getItem('pa_bg_blur') || '12');
+applyBackground(localStorage.getItem('pa_bg_source') || 'none');
 
 // ── Settings tabs ─────────────────────────────────────────────────────────────
 function switchSettingsTab(tabName) {
@@ -1783,15 +2431,18 @@ document.querySelectorAll('.settings-tab').forEach(btn => {
   btn.addEventListener('click', () => switchSettingsTab(btn.dataset.tab));
 });
 
-settingsBtn.addEventListener('click', async () => {
+async function openSettingsView() {
   await loadEngineConfigs();
   closeEngineForm();
   settingsMsg.textContent = '';
   settingsMsg.className = 'settings-msg';
   switchSettingsTab('engines');
   showView('settings');
-});
+}
 
+if (settingsBtn) {
+  settingsBtn.addEventListener('click', openSettingsView);
+}
 settingsCloseBtn.addEventListener('click', () => showView('input'));
 
 // ── Backup/Restore ────────────────────────────────────────────────────────────
@@ -1806,16 +2457,16 @@ async function exportBackup() {
   try {
     exportBtn.disabled = true;
     exportBtn.textContent = 'Exporting...';
-    
-    const csvContent = await invoke('export_data');
-    
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+
+    const jsonContent = await invoke('export_data');
+
+    const blob = new Blob([jsonContent], { type: 'application/json;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.setAttribute("href", url);
-    
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+
     const dateStr = new Date().toISOString().slice(0, 10);
-    link.setAttribute("download", `promptly_backup_${dateStr}.csv`);
+    link.setAttribute('download', `promptly_backup_${dateStr}.json`);
     link.style.visibility = 'hidden';
     document.body.appendChild(link);
     link.click();
@@ -1829,7 +2480,7 @@ async function exportBackup() {
     msgEl.className = 'settings-msg error';
   } finally {
     exportBtn.disabled = false;
-    exportBtn.textContent = 'Export to CSV';
+    exportBtn.textContent = 'Export to JSON';
   }
 }
 
@@ -1842,10 +2493,7 @@ function setupBackupTab() {
   const msgEl = document.getElementById('backup-msg');
 
   exportBtn.addEventListener('click', exportBackup);
-
-  importBtn.addEventListener('click', () => {
-    importFileEl.click();
-  });
+  importBtn.addEventListener('click', () => importFileEl.click());
 
   importFileEl.addEventListener('change', (e) => {
     const file = e.target.files[0];
@@ -1871,15 +2519,15 @@ function setupBackupTab() {
 
     const reader = new FileReader();
     reader.onload = async (e) => {
-      const csvContent = e.target.result;
+      const content = e.target.result;
       try {
-        const response = await invoke('import_data', { jsonContent: csvContent });
+        const response = await invoke('import_data', { jsonContent: content });
         msgEl.textContent = response || '✓ Import successful!';
         msgEl.className = 'settings-msg';
-        
+
         await loadRecipes();
         await loadEngineConfigs();
-        
+
         importFileEl.value = '';
         selectedImportFile = null;
         fileNameSpan.textContent = 'No file selected';
@@ -1901,7 +2549,6 @@ function setupBackupTab() {
     reader.readAsText(selectedImportFile);
   });
 }
-
 
 // ── History ───────────────────────────────────────────────────────────────────
 const historyBtn      = document.getElementById('history-btn');
@@ -1926,7 +2573,6 @@ function buildHistoryTurnEl(r, label) {
   const finalPrompt  = (r.final_prompt || '').trim();
   const preview      = responseText.slice(0, 100).replace(/\n+/g, ' ') || '(no response)';
 
-  // Always escape dynamic values inserted via innerHTML
   const safeRecipeId = escapeHtml(r.prompt_id || '—');
   const safeEngine   = escapeHtml(r.engine    || '');
   const safeTime     = escapeHtml(formatTimeAgo(r.created_at));
@@ -1935,7 +2581,6 @@ function buildHistoryTurnEl(r, label) {
   const el = document.createElement('div');
   el.className = 'history-item';
 
-  // Build header
   const header = document.createElement('div');
   header.className = 'history-item-header';
   header.innerHTML = `
@@ -1945,12 +2590,10 @@ function buildHistoryTurnEl(r, label) {
     <span class="history-time">${safeTime}</span>
   `;
 
-  // Build preview
   const previewEl = document.createElement('div');
   previewEl.className = 'history-preview';
   previewEl.textContent = preview;
 
-  // Build detail (hidden until expanded)
   const detail = document.createElement('div');
   detail.className = 'history-detail';
 
@@ -1961,7 +2604,7 @@ function buildHistoryTurnEl(r, label) {
 
     const inputText = document.createElement('div');
     inputText.className = 'history-input-text';
-    inputText.textContent = finalPrompt;   // textContent = safe, no XSS
+    inputText.textContent = finalPrompt;
 
     detail.appendChild(inputLabel);
     detail.appendChild(inputText);
@@ -1975,7 +2618,6 @@ function buildHistoryTurnEl(r, label) {
   responseLabel.textContent = 'Response';
   responseHeader.appendChild(responseLabel);
 
-  // Copy button — only created when there IS a response
   let copyBtn = null;
   if (responseText) {
     copyBtn = document.createElement('button');
@@ -2007,18 +2649,12 @@ function buildHistoryTurnEl(r, label) {
   el.appendChild(previewEl);
   el.appendChild(detail);
 
-  // Toggle expanded/collapsed.
-  // - Lazy render Markdown only when first expanding an item
-  // - Clicking header or preview always toggles.
-  // - Clicking INSIDE the detail area (text, links) when already expanded does nothing
-  // - Copy button always stops propagation itself, so it never reaches here.
   el.addEventListener('click', (e) => {
     const targetNode = e.target;
     if (targetNode && typeof targetNode.closest === 'function' && targetNode.closest('.history-detail')) return;
 
     const willExpand = !el.classList.contains('expanded');
     if (willExpand && !hasRenderedMarkdown && responseText) {
-      console.log(`[History Log] Lazy rendering Markdown for record ${r.id || 'unknown'}`);
       responseText_el.innerHTML = renderMarkdown(responseText);
       hasRenderedMarkdown = true;
     }
@@ -2029,8 +2665,6 @@ function buildHistoryTurnEl(r, label) {
   return el;
 }
 
-
-// Helper: invoke with a timeout so a hung backend doesn't freeze the UI
 function invokeWithTimeout(cmd, args, ms = 8000) {
   return Promise.race([
     invoke(cmd, args),
@@ -2041,12 +2675,10 @@ function invokeWithTimeout(cmd, args, ms = 8000) {
 }
 
 async function loadHistory() {
-  console.log('[History Log] Loading history requested...');
   historyListEl.innerHTML = '<p class="history-empty">Loading…</p>';
   try {
     const json = await invokeWithTimeout('list_history', {}, 8000);
     const records = JSON.parse(json) || [];
-    console.log(`[History Log] Received ${records.length} history records from backend`);
 
     if (records.length === 0) {
       historyListEl.innerHTML = '<p class="history-empty">No history yet.</p>';
@@ -2054,7 +2686,6 @@ async function loadHistory() {
     }
     historyListEl.innerHTML = '';
 
-    // Group records by session_id; records without a session go solo
     const sessions = new Map();
     for (const r of records) {
       const sid = r.session_id || '';
@@ -2066,7 +2697,6 @@ async function loadHistory() {
       turns.sort((a, b) => (a.turn_index || 0) - (b.turn_index || 0));
     }
 
-    // Build the ordered list of items to render
     const renderQueue = [];
     const seenSessions = new Set();
     for (const r of records) {
@@ -2085,7 +2715,6 @@ async function loadHistory() {
       }
     }
 
-    // Render in small batches to avoid blocking the main thread
     const BATCH = 5;
     let idx = 0;
     function renderBatch() {
@@ -2122,21 +2751,18 @@ async function loadHistory() {
         }
       }
       if (idx < renderQueue.length) {
-        setTimeout(renderBatch, 0);  // yield to browser between batches
-      } else {
-        console.log('[History Log] Batch rendering completed successfully');
+        setTimeout(renderBatch, 0);
       }
     }
     renderBatch();
 
   } catch (err) {
-    console.error('[History Log ERROR] Failed to load history:', err);
     historyListEl.innerHTML = `<p class="history-empty">Error: ${err.message || err}</p>`;
   }
 }
 
 historyBtn.addEventListener('click', async () => {
-  showView('history');   // show immediately — don't await loadHistory first
+  showView('history');
   loadHistory();
 });
 
@@ -2147,7 +2773,6 @@ let clearConfirmTimer = null;
 
 historyClearBtn.addEventListener('click', async () => {
   if (!clearConfirmPending) {
-    // First click: ask for confirmation inline
     clearConfirmPending = true;
     historyClearBtn.textContent = 'Sure?';
     clearConfirmTimer = setTimeout(() => {
@@ -2156,7 +2781,6 @@ historyClearBtn.addEventListener('click', async () => {
     }, 3000);
     return;
   }
-  // Second click within 3s: execute
   clearTimeout(clearConfirmTimer);
   clearConfirmPending = false;
   historyClearBtn.textContent = 'Clear All';
@@ -2168,9 +2792,8 @@ historyClearBtn.addEventListener('click', async () => {
   }
 });
 
-// Listen for tray menu event to open history
 listen('open-history', () => {
-  showView('history');   // show immediately
+  showView('history');
   loadHistory();
 });
 
@@ -2179,8 +2802,9 @@ showView('input');
 loadRecipes();
 loadEngineConfigs();
 setupBackupTab();
+updateContextUI();
 
-// Load clipboard on startup — runs after all variables are declared
+// Load clipboard on startup
 invoke('get_clipboard').then(clip => {
   if (clip) {
     currentSelection = clip;

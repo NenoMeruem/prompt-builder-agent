@@ -21,13 +21,15 @@
       {
         "label": "overlay",
         "title": "Promptly",
-        "width": 780,
-        "height": 600,
+        "width": 740,
+        "height": 520,
+        "center": true,
         "resizable": false,
         "decorations": false,
         "alwaysOnTop": true,
         "visible": false,
         "transparent": true,
+        "theme": "Dark",
         "skipTaskbar": true
       }
     ],
